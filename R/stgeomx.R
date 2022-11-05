@@ -249,11 +249,11 @@ st_geomx_merge_probes <- function(ds) {
 #' @param ds list produced by st_geomx_merge_probes
 #' @returns list dataset
 #' @export
-st_geomx_filter_thresholds <- function(ds,
-                                       min_counts = 0,
-                                       min_auc = 0.5,
-                                       aoi_min_frac_expr = 0.0,
-                                       gene_min_frac_expr = 0.0) {
+st_geomx_set_thresholds <- function(ds,
+                                    min_counts = 0,
+                                    min_auc = 0.5,
+                                    aoi_min_frac_expr = 0.0,
+                                    gene_min_frac_expr = 0.0) {
   # apply filtering parameters to samples
   ds$samples <- ds$samples %>% mutate(
     keep = (num_counts > min_counts) & (bg_auc > min_auc) & (frac_expr > aoi_min_frac_expr)
@@ -280,7 +280,7 @@ st_geomx_filter <- function(ds) {
   fds <- list(
     samples = filter(ds$samples, keep),
     meta = filter(ds$meta, keep),
-    counts = ds$counts[ds$meta$keep, ds$samples$keep],
+    counts = ds$counts[ds$meta$keep, ds$samples$keep]
   )
   return(fds)
 }
@@ -310,27 +310,65 @@ background_subtract <- function(x, offset=0, min.count=1) {
   x
 }
 
+
 #'
-#' subtract background noise from each sample
+#' background subtraction
 #'
-#' @param x count matrix
-#' @param offset vector of bg noise levels per sample
-#' @param min.count minimum count threshold
-#' @returns matrix of background-subtracted counts
+#' @param ds list dataset
+#' @returns matrix of background normalized counts
+#'
+bgsub <- function(ds, min.count=1) {
+
+  bg <- ds$meta$bg
+
+  apply_bgsub_quant <- function(xcol) {
+    xbg <- xcol[bg]
+    outbg <- density(xbg, adjust=3)
+    y <- cumsum(outbg$y)/sum(outbg$y)
+    bg_quants <- approx(outbg$x, y, xout=xcol, rule=2)$y
+    y <- quantile(xbg, probs=bg_quants, names=FALSE)
+    return(xcol - y)
+  }
+
+  x <- ds$counts
+  x <- apply(x, MARGIN=2, FUN=apply_bgsub_quant)
+  x <- apply(x, 2, pmax, min.count)
+  return(x)
+}
+
+
+
+#'
+#' background normalization
+#'
+#' @param ds list dataset
+#' @returns matrix of background normalized counts
+#'
+bgnorm <- function(ds) {
+  x <- log2(cpm(ds$counts))
+  xbg <- x[ds$meta$bg, ]
+  xbg <- apply(xbg, 2, mean)
+  x <- sweep(x, 2, xbg, FUN="-")
+  x <- apply(x, 2, pmax, 0)
+  x <- 2^x
+}
+
+
+#'
+#' quantile normalization
+#'
+#' @param x matrix of numeric values
+#' @returns matrix of quantile normalized counts
 #'
 normalize_quantile <- function(x) {
-  # convert to cpm
-  num_counts <- colSums(x)
-  xcpm <- sweep(x * 1e6, 2, num_counts, "/")
-
   # use row sums as a tiebreaker for genes with equal counts
-  row_rank <- rank(rowSums(xcpm), ties.method="random")
-  row_ord <- apply(xcpm, 2, order, row_rank)
+  row_rank <- rank(rowSums(x), ties.method="random")
+  row_ord <- apply(x, 2, order, row_rank)
   # rank matrix with ties broken by row sums
   xrank <- apply(row_ord, 2, order)
 
   # now standard quantile norm (geomean)
-  xsort <- apply(xcpm, 2, sort)
+  xsort <- apply(x, 2, sort)
   xgeomean <- apply(xsort, 1, geomean)
 
   index_to_value <- function(my_index, my_value){
@@ -343,13 +381,48 @@ normalize_quantile <- function(x) {
 
 
 #'
-#' background subtraction and quantile normalization
+#' edgeR package
+#' https://rdrr.io/bioc/edgeR/src/R/calcNormFactors.R
+#' Cite Mark Robinson
+#' Scale factors as in Anders et al (2010)
+#' Mark Robinson
+#' Created 16 Aug 2010
+#'
+#' @param data matrix of counts
+calc_norm_factors_rle <- function(data) {
+  gm <- exp(rowMeans(log(data)))
+  apply(data, 2, function(u) median((u/gm)[gm > 0]))
+}
+
+
+#'
+#' Normalization
+#'
+#' background subtraction and scale/quantile normalization
 #'
 #' @param x matrix of counts
-#' @param bg vector of background noise levels to subtract
-bgsub_qnorm <- function(x, bg) {
-  x <- background_subtract(x, bg)
-  x <- normalize_quantile(x)
+#' @param bgsub bool perform background subtraction
+#' @param method string normalization method
+#' @returns matrix of normalized counts
+#' @export
+st_geomx_normalize <- function(ds, bgsub=TRUE, method=c("qn", "rle")) {
+  x <- ds$counts
+
+  if (bgsub) {
+    #x <- bgsub(ds)
+    x <- background_subtract(x, ds$samples$bg_geomean)
+  }
+
+  if (method == "qn") {
+    x <- normalize_quantile(cpm(x))
+  } else if (method == "rle") {
+    sf <- colSums(ds$counts) / 1e6
+    nf <- calc_norm_factors_rle(x) / sf
+    nf <- nf / geomean(nf)
+    x <- sweep(x, 2, sf * nf, FUN="/")
+  } else {
+    stop("method not found")
+  }
   return(x)
 }
 

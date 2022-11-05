@@ -24,16 +24,20 @@ library(writexl)
 library(arrow)
 library(limma)
 library(edgeR)
-library(umap)
-library(factoextra)
-library(msigdbr)
-library(fgsea)
-library(GSVA)
 
 library(patchwork)
 library(ggrepel)
 library(ggridges)
 library(pheatmap)
+
+save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
+  stopifnot(!missing(x))
+  stopifnot(!missing(filename))
+  pdf(filename, width=width, height=height)
+  grid::grid.newpage()
+  grid::grid.draw(x$gtable)
+  dev.off()
+}
 
 ```
 
@@ -52,8 +56,18 @@ geomx_mel_xlsx <- file.path(geomx_dir, "mel_tma_wta_2022-10-25.xlsx")
 # sample annotation file
 geomx_mel_annot_xlsx <- file.path(geomx_dir, "mel_tma_annot_2022_10-25.xlsx")
 
+# human protein atlas melanoma signatures
+hpa_mel_prog_xlsx <- file.path(data_dir, "hpa_melanoma_prognostic.xlsx")
+
 # qc parameters
 geomx_negprobe_lod_quantile = 0.9
+geomx_min_counts = 1e6
+geomx_min_auc = 0.65
+geomx_aoi_min_frac_expr = 0.2
+geomx_gene_min_frac_expr = 0.2
+
+# normalization
+norm_method = "qn"
 
 # de parameters
 de_padj_cutoff <- 0.05
@@ -79,46 +93,40 @@ ds <- st_geomx_process_input(ds, geomx_negprobe_lod_quantile)
 ds <- st_geomx_merge_probes(ds)
 
 # read and join sample annotation
-annot <- read_excel(geomx_mel_annot_xlsx)
-ds$samples <- ds$samples %>% inner_join(annot, by="SegmentDisplayName")
+annot <- read_excel(geomx_mel_annot_xlsx) %>%
+  mutate(patient_sample = paste0(patient, "_", sample))
+
+ds$samples <- ds$samples %>% 
+  inner_join(annot, by="SegmentDisplayName")
 ```
 
-## QC
+
+## QC and filtering AOI / Genes
 
 ```{r choose filtering thresholds}
 
 summary(ds$samples$num_counts)
 summary(ds$samples$frac_expr)
 
-geomx_min_counts = 1e6
-geomx_min_auc = 0.65
-geomx_aoi_min_frac_expr = 0.2
-geomx_gene_min_frac_expr = 0.1
-
-ds <- st_geomx_filter_thresholds(ds, 
-                                 min_counts = geomx_min_counts,
-                                 min_auc = geomx_min_auc,
-                                 aoi_min_frac_expr = geomx_aoi_min_frac_expr,
-                                 gene_min_frac_expr = geomx_gene_min_frac_expr)
+ds <- st_geomx_set_thresholds(ds, 
+                              min_counts = geomx_min_counts,
+                              min_auc = geomx_min_auc,
+                              aoi_min_frac_expr = geomx_aoi_min_frac_expr,
+                              gene_min_frac_expr = geomx_gene_min_frac_expr)
 
 table(ds$samples$keep)
 table(ds$meta$expressed)
 
-
 ```
-
 
 ## QC plots: AOI filtering
 
 ```{r aoi filtering}
-
-load_all()
 p <- st_geomx_plot_aoi_filter(ds, geomx_min_counts, geomx_min_auc, geomx_aoi_min_frac_expr)
 p
-ggsave(file.path(plot_dir, "geomx_aoi_filter.pdf"), p)
+ggsave(file.path(plot_dir, "qc_aoi_filter.pdf"), p)
 
 ```
-
 
 ## QC plots: gene filtering cutoff
 
@@ -130,10 +138,1145 @@ ggsave(file.path(plot_dir, "qc_gene_filtering_fpr_auc.pdf"), p)
 
 ```
 
+## Explore likelihood ratio transform
 
-## QC plots: AOI counts versus fraction detectable genes
+```{r likelihood ratio explore}
 
-```{r aoi counts versus fraction detectable genes}
+# 
+# x <- ds$counts[!ds$meta$bg, ]
+# xbg <- ds$counts[ds$meta$bg, ]
+# 
+# x1 <- log2(unlist(x[,1]))
+# xbg1 <- log2(unlist(xbg[,1]))
+# xmin <- min(c(x1, xbg1))
+# xmax <- max(c(x1, xbg1))
+# hist(x1, freq=FALSE, breaks=100, ylim=c(0, 1))
+# lines(density(x1, bw=0.2))
+# hist(xbg1, freq=FALSE, breaks=10, ylim=c(0, 2))
+# lines(density(xbg1, bw=0.2))
+# out <- density(x1, bw=0.2, from=xmin, to=xmax)
+# outbg <- density(xbg1, bw=0.2, from=xmin, to=xmax)
+# p <- 15
+# y <- approx(out$x, out$y, xout = p)$y
+# ybg <- approx(outbg$x, outbg$y, xout = p)$y
+# y / ybg
+# 
+
+```
+
+
+## BG Correction
+
+
+```{r bgcorrect}
+
+bgquants <- function(x, xbg, bw.adjust=3, n=10000, eps=1e-10) {
+  # quantiles of background signal corresponding to signal
+  xmin <- min(x)
+  xmax <- max(x)
+  d <- density(xbg, adjust=bw.adjust, from=xmin, to=xmax, n=n)
+  bgcdf <- d$y + eps
+  bgcdf <- cumsum(d$y) / sum(d$y)
+  q <- approx(d$x, bgcdf, xout=x)$y
+  #q <- approx(d$x, bgcdf, xout=x, rule=2)$y
+  return(q)
+}
+
+
+bglm <- function(xbg, theta) {
+  # linear model of background in quantile window [theta, 1-theta]
+  idx <- which(xbg >= quantile(xbg, theta) & xbg <= quantile(xbg, 1-theta))
+  xbgsubset <- xbg[idx]
+  ybgsubset <- (rank(xbg, ties.method="random")/length(xbg))[idx]
+  out <- lm(xbgsubset ~ ybgsubset)
+  b <- out$coefficients[1]
+  m <- out$coefficients[2]
+  
+  f <- function(quants) {
+    noise <- m * quants + b
+    return(noise)
+  }
+  return(f)
+}
+
+
+st_geomx_bgcorrect <- function(x, bg, theta=0.25, bw.adjust=3, n=10000, eps=1e-10, min.count=1) {
+
+  apply_bgcorrect <- function(x, bg) {
+    x <- log2(x)
+    qbg <- bgquants(x, x[bg], bw.adjust, n, eps)
+    noise_func <- bglm(x[bg], theta)
+    ybg <- noise_func(qbg)
+    return(2^(x) - 2^(ybg))
+    #return(x - ybg)
+  }  
+  
+  x <- apply(x, MARGIN=2, FUN=apply_bgcorrect)
+  x <- apply(x, 2, pmax, min.count)
+  return(x)
+}
+
+
+bg <- ds$meta$bg
+x <- cpm(ds$counts)
+x <- log2(x)
+xmin <- 0
+xmax <- max(x)
+eps <- 1e-6
+bw <- 1
+n <- 10000
+
+x1 <- unlist(x[, "s03_r030_fullroi"])
+#x1 <- unlist(x[, "s04_r058_fullroi"])
+x1bg <- x1[bg]
+x1min <- min(x1)
+x1max <- max(x1)
+
+d <- density(x1, bw=bw, from=x1min, to=x1max, n=n)
+dbg <- density(x1bg, bw=bw, from=x1min, to=x1max, n=n)
+lr <- d$y / dbg$y
+pbg <- 1 / (1 + lr)
+pbgcdf <- cumsum(pbg)
+noise <- x1min + (x1max - x1min) * pbgcdf / n
+
+y1 <- approx(d$x, noise, xout=x1)$y
+
+plot(x1, x1 - y1, cex=0.1, pch=19)
+
+tbl <- bind_cols(dx=d$x, dy=d$y, dbgx=dbg$x, dbgy=dbg$y, lr=lr, 
+                 pbg=pbg, pbgcdf=pbgcdf, noise=noise)
+ggplot(tbl) + 
+  geom_line(aes(dx, noise)) +
+  geom_hline(yintercept = median(x1bg), color="red", linetype="dashed")
+
+tbl <- bind_cols(x1=x1, y1=y1)
+ggplot(tbl) + 
+  geom_line(aes(x1,y1)) +
+  geom_line(aes(x1, x1-y1), color="red") +
+  geom_hline(yintercept = median(x1bg), color="red", linetype="dashed") +
+  geom_hline(yintercept = mean(x1bg), color="blue", linetype="dashed")
+
+
+
+range(x1bg)
+
+
+y <- approx(d$x, d$y, xout=x1)$y
+ybg <- approx(dbg$x, dbg$y, xout=x1)$y
+
+lr <- y / ybg
+pbg <- 1 / (1 + lr)
+cumsum(pbg)
+
+plot(x1, cumsum(pbg), xlim=c(0,1000))
+
+tbl <- bind_cols(dx=d$x, dy=d$y, dbgx=dbg$x, dbgy=dbg$y)
+ggplot(tbl) + 
+  geom_line(aes(dbgx, dbgy)) +
+  xlim(1, 1000)
+
+
+y <- approx(d$x, d$y, xout=x1)$y
+ybg <- approx(dbg$x, dbg$y, xout=x1)$y
+
+
+
+tbl <- bind_cols(dx = d$x, dy = d$y, dbgx=dbg$x, dbgy=dbg$y)
+ggplot(tbl) +
+  geom_line(aes(dx, dy)) +
+  geom_line(aes(dbgx, dbgy), color="red")
+
+
+
+dcdf <- cumsum(d$y + eps) / sum(d$y + eps)
+dbgcdf <- cumsum(dbg$y + eps) / sum(dbg$y + eps)
+
+y <- approx(d$x, dcdf, xout=x1)$y
+ybg <- approx(d$x, dbgcdf, xout=x1)$y
+
+y <- approx(d$x, dcdf, xout=10)$y
+ybg <- approx(d$x, dbgcdf, xout=10)$y
+
+
+noise <- x1 * (1-ybg) / (1-y)
+plot(x1, noise)
+plot(x1, (1 - ybg) / (1 - y))
+(1 - ybg) / (1 - y)
+(1 - ybg) / (1 - y)
+(1 - y) / (1 - ybg)
+
+
+tbl <- bind_cols(dx = d$x, dy = dcdf, dbgx=dbg$x, dbgy=dbgcdf)
+ggplot(tbl) +
+  geom_line(aes(dx, dy)) +
+  geom_line(aes(dbgx, dbgy), color="red")
+
+
+
+bgdensity <- density(x1bg, adjust=3, from=xmin, to=xmax, n=100000)
+bgcdf <- cumsum(bgdensity$y + eps) / sum(bgdensity$y + eps)
+bgq <- approx(bgdensity$x, bgcdf, xout=x1, rule=2)$y
+
+plot(density(bgq))
+plot(ecdf(bgdensity$y))
+
+y <- approx(bgcdf, bgdensity$x, xout=q)$y
+plot(bgcdf, bgdensity$x)
+plot(x1, y)
+plot(d$x, bgcdf, cex=0.5, pch=19)
+
+qbg <- bgquants(x1, x1[bg])
+noise_func <- bglm(x1[bg], theta=0.4)
+
+plot(x1, qbg)
+hist(x1[bg])
+max(x1[bg])
+x1[bg]
+quantile(x1[bg], 0.4)
+quantile(x1[bg], 0.6)
+plot(sort(x1[bg]))
+xbg <- x1[bg]
+theta <- 0.4
+
+
+ybg <- noise_func(qbg)
+
+plot(x1, ybg)
+summary(ybg)
+plot(x1, ybg)
+xnew <- (2^x1 - 2^ybg)
+xnew <- pmax(xnew, 1)
+x <- st_geomx_bgcorrect(ds, theta=0.1, bw.adjust=3, n=10000, eps=1e-10)
+
+```
+
+
+## Background correction
+
+```{r}
+
+plot_bgsub <- function(s, m, x, cpm_quantile = 0.75) {
+  s <- select(s, aoi, slide, keep)
+  y <- bind_cols(m, x)
+  y <- y %>%
+    pivot_longer(colnames(x), names_to="aoi", values_to="count") %>%
+    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi")) %>%
+    group_by(aoi, bg) %>%
+    summarise(keep_aoi = first(keep_aoi),
+              slide = first(slide),
+              qcpm = stats::quantile(count, cpm_quantile),
+              gmcpm = geomean(count))
+
+  p1 <- ggplot(y, aes(x=qcpm,
+                     y=reorder(factor(aoi), qcpm),
+                     color=factor(bg),
+                     shape=factor(keep_aoi))) +
+    geom_point(size=1, alpha=0.5) +
+    scale_x_log10() +
+    scale_color_manual(values = pals::cols25()) +
+    theme_minimal() +
+    theme(axis.text.y = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank()) +
+    labs(color = "BG", shape = "Keep AOI", x="CPM", y="AOI",
+         title=paste0("BG vs Signal CPM Quantile = ", cpm_quantile))
+  
+  y <- y %>%
+    pivot_wider(names_from="bg", values_from=c("gmcpm", "qcpm"))
+
+  bg_gene_cor <- cor.test(y$qcpm_TRUE, y$qcpm_FALSE)$estimate
+  label_cor <- sprintf("Correlation r = %.2f", bg_gene_cor)
+  p2 <- ggplot(y, aes(x=qcpm_TRUE, y=qcpm_FALSE, color=keep_aoi)) +
+    geom_point(alpha=0.6) +
+    geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, color="black", linetype="dashed") +
+    scale_x_log10() +
+    scale_y_log10() +
+    scale_color_manual(values = pals::cols25()) +
+    theme_minimal() +
+    labs(color="Keep AOI",
+         x="bg cpm", y="gene cpm",
+         subtitle=label_cor)
+  return(p1 + p2)
+}
+
+
+
+x <- st_geomx_bgcorrect(ds$counts, ds$meta$bg, theta=0.25, bw.adjust=5, n=10000, eps=1e-20)
+
+apply(x, 2, function(x) { any(is.na(x))})
+
+p1 <- plot_bgsub(ds$samples, ds$meta, x, cpm_quantile=1)
+p1
+
+
+# plot bg
+cpm_quantile <- 0.5
+x <- cpm(ds$counts)
+p1 <- plot_bgsub(ds$samples, ds$meta, x, cpm_quantile)
+p1
+
+# background sub
+x <- cpm(bgsub(ds))
+p2 <- plot_bgsub(ds$samples, ds$meta, x, cpm_quantile)
+p2
+
+# bgsub
+x <- cpm(background_subtract(ds$counts, ds$samples$bg_geomean))
+p3 <- plot_bgsub(ds$samples, ds$meta, x, cpm_quantile)
+p3
+
+
+p <- p1 / p3
+p
+f <- file.path(plot_dir, "qc_aoi_qc_bgsub.pdf")
+ggsave(f, plot=p, device="pdf")
+
+
+```
+
+## Examine technical replicates
+
+```{r technical replicates}
+
+# make dataset with just technical replicates
+s <- ds$samples %>%
+  mutate(patient_sample = paste0(patient, "_", sample),
+         replicate = paste0("rep", replicate)) %>%
+  group_by(patient_sample) %>%
+  filter(n() >=2) %>%
+  ungroup() %>%
+  arrange(patient_sample)
+
+# pivot to compare replicates
+x <- s %>%
+  pivot_wider(id_cols = patient_sample, 
+              names_from = replicate, 
+              values_from = c(aoi, keep, bg_auc, bg_geomean, frac_expr, count_geomean, snr_geomean, num_counts))
+x <- x %>%
+  mutate(keep = case_when(keep_rep0 & keep_rep1 ~ "both",
+                          keep_rep0 ~ "rep0",
+                          keep_rep1 ~ "rep1",
+                          TRUE ~ "none"))
+
+cor.test(x$num_counts_rep0, x$num_counts_rep1)
+p <- ggplot(x, aes(x=num_counts_rep0, y=num_counts_rep1)) +
+  geom_point(aes(color=keep)) + 
+  scale_color_manual(values = pals::cols25()) +
+  geom_smooth(method='lm', formula= y~x) +
+  geom_abline(slope=1, intercept=0, color='red', linetype='dashed') +
+  scale_x_log10() +
+  scale_y_log10() + 
+  theme_minimal()
+p
+f <- file.path(plot_dir, "qc_techrep_scatter_numcounts.pdf")
+ggsave(f, plot=p, device="pdf")
+
+cor.test(x$bg_auc_rep0, x$bg_auc_rep1)
+p <- ggplot(x, aes(x=bg_auc_rep0, y=bg_auc_rep1)) +
+  geom_point(aes(color=keep)) + 
+  scale_color_manual(values = pals::cols25()) +
+  geom_smooth(method='lm', formula= y~x) +
+  geom_abline(slope=1, intercept=0, color='red', linetype='dashed') +
+  theme_minimal()
+p
+f <- file.path(plot_dir, "qc_techrep_scatter_auc.pdf")
+ggsave(f, plot=p, device="pdf")
+
+cor.test(x$frac_expr_rep0, x$frac_expr_rep1)
+p <- ggplot(x, aes(x=frac_expr_rep0, y=frac_expr_rep1)) +
+  geom_point(aes(color=keep)) + 
+  scale_color_manual(values = pals::cols25()) + 
+  geom_smooth(method='lm', formula= y~x) +
+  geom_abline(slope=1, intercept=0, color='red', linetype='dashed') +
+  theme_minimal()
+p
+f <- file.path(plot_dir, "qc_techrep_scatter_frac_expr.pdf")
+ggsave(f, plot=p, device="pdf")
+
+
+# correlation matrix
+s0 <- s %>% filter(replicate == "rep0")
+s1 <- s %>% filter(replicate == "rep1")
+#s1 <- s %>% filter(replicate == "rep1", keep)
+#s0 <- s %>% filter(replicate == "rep0", keep)
+x0 <- ds$counts[, s0$aoi]
+x1 <- ds$counts[, s1$aoi]
+colnames(x0) <- s0$patient_sample
+colnames(x1) <- s1$patient_sample
+x <- cor(log2(x0), log2(x1), method = "spearman")
+
+y <- as_tibble(x, rownames="s0") %>%
+  pivot_longer(s1$patient_sample, names_to="s1", values_to="cor") %>%
+  mutate(techrep = s0 == s1,
+         p0 = str_split_fixed(s0, "_", 2)[,1],
+         p1 = str_split_fixed(s1, "_", 2)[,1],
+         samepatient = p0 == p1,
+         cond = case_when(techrep ~ "techrep",
+                          samepatient ~ "samepatient",
+                          TRUE ~ "differentpatient")
+  )
+y$cond <- factor(y$cond, levels=c("differentpatient", "samepatient", "techrep"))
+
+
+# distribution of correlation
+p <- ggplot(y, aes(x=cor, y=cond, fill=cond)) +
+  stat_density_ridges(alpha=0.6, scale=3, quantile_lines=TRUE) +
+  scale_color_manual(values = pals::cols25())
+p
+f <- file.path(plot_dir, "qc_techrep_ridge_by_cond.pdf")
+ggsave(f, plot=p, device="pdf")
+
+# sort by condition
+y <- y %>% arrange(cond, s0)
+
+# reorder correlation matrix by condition
+x <- x[unique(y$s0), unique(y$s0)]
+p <- pheatmap(x,
+         color = pals::brewer.ylorrd(100),
+         breaks = seq(0, 1, length.out=101),
+         border_color = NA,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         fontsize_row=4,
+         fontsize_col=4)
+f <- file.path(plot_dir, "heatmap_techrep_cor_matrix.pdf")
+save_pheatmap_pdf(p, filename=f, width=8, height=8)
+
+
+```
+
+## Apply filters and normalize
+
+Consolidate technical replicates. When sample has replicates, choose replicate with greater signal-to-noise ratio
+
+```{r filter and normalize}
+
+# choose replicate with highest snauc
+s <- ds$samples %>%
+  group_by(patient_sample) %>%
+  slice_max(bg_auc, n=1) %>%
+  ungroup()
+
+fds <- list(samples = s,
+            meta = ds$meta,
+            counts = ds$counts[, s$aoi])
+
+# apply filters
+fds <- st_geomx_filter(fds)
+
+# normalize
+#bgnorm_cpm <- bgnorm(fds)
+#bgnorm_qn_cpm <- normalize_quantile(bgnorm_cpm)
+bgsub_qn_cpm <- st_geomx_normalize(fds, bgsub=TRUE, method="qn")
+bgsub_rle_cpm <- st_geomx_normalize(fds, bgsub=TRUE, method="rle")
+
+#rownames(bgnorm_cpm) <- fds$meta$gene
+#rownames(bgnorm_qn_cpm) <- fds$meta$gene
+rownames(bgsub_qn_cpm) <- fds$meta$gene
+rownames(bgsub_rle_cpm) <- fds$meta$gene
+
+# try a different method
+# y <- background_subtract(fds$counts, fds$samples$bg_geomean)
+# y <- DGEList(counts = y, samples=fds$samples, genes=fds$meta)
+# y <- calcNormFactors(y, method="TMM")
+# v <- voom(y, plot=TRUE)
+
+# choose normalized data to work with
+normcounts <- bgsub_rle_cpm
+#normcounts <- bgsub_qn_cpm
+#normcounts <- bgnorm_qn_cpm
+#normcounts <- bgnorm_cpm
+
+
+```
+
+
+
+## Raw count distributions
+
+```{r raw count distributions}
+
+# sample annotations to use in plots
+s <- select(ds$samples, aoi, slide, keep, acral, sample_type, os_quartile, vital_status)
+x <- bind_cols(ds$meta, ds$counts)
+x <- x %>%
+  pivot_longer(s$aoi, names_to="aoi", values_to="count") %>%
+  inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
+
+p <- x %>%
+  ggplot(aes(x=count, y=reorder(factor(aoi), count), fill=factor(bg))) +
+  stat_density_ridges(color="#ffffff00", alpha=0.4, scale=20, rel_min_height=0.001, quantile_lines=FALSE) + 
+  scale_x_continuous(trans="log10") +
+  scale_fill_manual(values = pals::cols25()) +
+  theme_ridges() + 
+  theme(axis.text.y = element_blank()) + 
+  labs(x="raw counts", y="AOIs", fill="bg") +
+#  theme(axis.text = element_text(size=5)) + 
+  facet_grid(slide ~ ., scales="free_y")
+p
+ggsave(file.path(plot_dir, "qc_ridge_raw_aoi.pdf"), p, width = 8, height = 8)
+
+# p <- x %>%
+#   ggplot(aes(x=count, y=reorder(factor(aoi), count), fill=factor(keep_aoi))) +
+#   stat_density_ridges(color="#ffffff00", alpha=0.4, scale=20, rel_min_height=0.001, quantile_lines=FALSE) + 
+#   scale_x_continuous(trans="log10") +
+#   scale_fill_manual(values = pals::cols25()) +
+#   theme_ridges() + 
+#   theme(axis.text.y = element_blank()) + 
+#   labs(x="raw counts", y="AOIs", fill="Keep AOI") +
+# #  theme(axis.text = element_text(size=5)) + 
+#   facet_grid(slide ~ ., scales="free_y")
+# p
+# ggsave(file.path(plot_dir, "qc_ridge_raw_aoi_keep.pdf"), p, width = 8, height = 8)
+# 
+# p <- x %>%
+#   ggplot(aes(x=count, y=reorder(factor(slide), count), fill=factor(bg))) +
+#   stat_density_ridges(alpha=0.5, scale=10, rel_min_height=0.001, quantile_lines=TRUE) + 
+#   scale_x_continuous(trans="log10") +
+#   scale_fill_manual(values = pals::cols25()) +
+#   theme_ridges() + 
+#   theme(axis.text.y = element_blank()) + 
+#   labs(x="raw counts", y="Slides", fill="bg") +
+# #  theme(axis.text = element_text(size=5)) + 
+#   facet_grid(slide ~ ., scales="free_y")
+# p
+# ggsave(file.path(plot_dir, "qc_ridge_raw_slide.pdf"), p, width = 8, height = 8)
+
+```
+
+
+## QC plot: normalization
+
+```{r qc normalization}
+
+# sample annotations to use in plots
+s <- select(fds$samples, aoi, slide, keep, acral, sample_type, os_quartile, vital_status)
+x <- bind_cols(fds$meta, normcounts)
+x <- x %>%
+  pivot_longer(s$aoi, names_to="aoi", values_to="count") %>%
+  inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
+
+y <- x %>%
+  group_by(aoi, expressed) %>%
+  summarise(slide = unique(slide),
+            med = median(count),
+            q3 = quantile(count, 0.75)) %>%
+  ungroup()
+
+p <- ggplot(x, aes(x=count, y=reorder(aoi, count), fill=slide)) +
+  stat_density_ridges(color="#00000066", alpha=0.4, scale=10, rel_min_height=0.001, quantile_lines=TRUE) +
+  scale_x_log10() +
+  scale_fill_manual(values = pals::cols25()) +
+  xlab("Count") +
+  ylab("AOIs") +
+  labs(fill = "Slide") +
+  theme_ridges() +
+  theme(axis.text.y = element_blank()) +
+  facet_grid(slide ~ ., scales="free_y")
+p
+f <- file.path(plot_dir, "qc_ridge_plot_norm_aoi.pdf")
+ggsave(f, plot=p, device="pdf", width = 8, height = 8)
+
+
+# by acral
+p <- x %>%
+  ggplot(aes(x=count, y=factor(acral), fill=factor(acral))) +
+  stat_density_ridges(alpha=0.7, scale=3, rel_min_height=0.001, quantile_lines=TRUE) + 
+  scale_color_manual(values = pals::cols25()) + 
+  scale_x_log10() +
+  theme_ridges() + 
+  theme(axis.text = element_text(size=5))
+p
+f <- file.path(plot_dir, "qc_ridge_plot_norm_acral.pdf")
+ggsave(f, plot=p, device="pdf", width = 8, height = 8)
+
+
+# by sample_type
+p <- x %>%
+  ggplot(aes(x=count, y=sample_type, fill=sample_type)) +
+  stat_density_ridges(alpha=0.5, scale=3, rel_min_height=0.001, quantile_lines=TRUE) + 
+  scale_color_manual(values = pals::cols25()) +
+  scale_x_log10() +
+  theme_ridges() + 
+  theme(axis.text = element_text(size=5))
+p
+f <- file.path(plot_dir, "qc_ridge_plot_norm_sample_type.pdf")
+ggsave(f, plot=p, device="pdf", width = 8, height = 8)
+
+
+# by survival
+p <- x %>%
+  ggplot(aes(x=count, y=os_quartile, fill=factor(os_quartile))) +
+  stat_density_ridges(alpha=0.5, scale=3, rel_min_height=0.001, quantile_lines=TRUE) + 
+  scale_color_manual(values = pals::cols25()) +
+  scale_x_log10() +
+  theme_ridges() + 
+  theme(axis.text = element_text(size=5))
+p
+f <- file.path(plot_dir, "qc_ridge_plot_norm_sample_type.pdf")
+ggsave(f, plot=p, device="pdf", width = 8, height = 8)
+
+
+```
+
+
+## Unsupervised clustering / dimensionality reduction
+
+```{r dim reduction}
+library(factoextra)
+library(umap)
+
+most_cv_genes <- function(x, ntop=500) {
+  rv <- apply(x, 1, function(x) sd(x) / mean(x))
+  keep <- order(rv, decreasing=TRUE)[seq_len(min(ntop, length(rv)))]
+  return(x[keep,])
+}
+
+run_pca <- function(x) {
+  pca <- prcomp(t(x))
+  pct_var <- round(100 * pca$sdev^2 / sum( pca$sdev^2 ), 2)
+  pct_var <- paste(colnames(pca$x), " (", paste(as.character(pct_var), "%", ")", sep=""), sep="")
+  return(list(pca = pca, pct_var = pct_var))
+}
+
+y <- log2(normcounts)
+y <- most_cv_genes(y, 2000)
+
+pca_res <- run_pca(y)
+pca_tbl <- bind_cols(fds$samples, as_tibble(pca_res$pca$x))
+
+# pca plots
+p <- ggplot(pca_tbl, aes(x=PC1, y=PC2)) +
+  theme_minimal() +
+  labs(x=pca_res$pct_var[1], y=pca_res$pct_var[2])
+
+# qc factors
+p1 <- p + geom_point(aes(color=bg_auc), alpha = 0.8, size=2) +
+  scale_color_viridis_c()
+p1
+ggsave(file.path(plot_dir, "pca_bg_auc.pdf"), plot=p1, device="pdf")
+
+p1 <- p + geom_point(aes(color=frac_expr), alpha = 0.8, size=2) +
+  scale_color_viridis_c()
+p1
+p1 <- p + geom_point(aes(color=slide), alpha = 0.8, size=2) +
+  scale_color_manual(values=pals::cols25())
+p1
+
+
+# biological factors
+p1 <- p + geom_point(aes(color=factor(patient)), alpha = 0.8, size=2)
+p1
+p1 <- p + geom_point(aes(color=factor(acral)), alpha = 0.8, size=2) +
+  scale_color_manual(values=pals::cols25())
+p1
+ggsave(file.path(plot_dir, "pca_acral.pdf"), plot=p1, device="pdf")
+
+p1 <- p + geom_point(aes(color=factor(sample_type)), alpha = 0.8, size=2) +
+  scale_color_manual(values=pals::cols25())
+p1
+ggsave(file.path(plot_dir, "pca_sample_type.pdf"), plot=p1, device="pdf")
+
+p1 <- p + geom_point(aes(color=factor(os_quartile)), alpha = 0.8, size=2) +
+  scale_color_manual(values=pals::cols25())
+p1
+ggsave(file.path(plot_dir, "pca_os_quartile.pdf"), plot=p1, device="pdf")
+
+# investigate contributions to pca
+res.pca <- prcomp(y, scale = TRUE)
+p <- fviz_pca_ind(res.pca, select.ind=list(contrib=50), repel=TRUE, max.overlaps=Inf)
+p
+ggsave(file.path(plot_dir, "pca_ind.pdf"), p)
+
+p <- fviz_contrib(res.pca, choice = "ind", axes = 1, top=20)
+p
+ggsave(file.path(plot_dir, "pca_contrib.pdf"), p)
+
+
+# UMAP variable genes
+umap_fit <- t(y) %>%
+   scale() %>% 
+   umap()
+umap_df <- umap_fit$layout %>%
+   as.data.frame() %>%
+   dplyr::rename(umap1 = "V1",
+                 umap2 = "V2")
+umap_df <- bind_cols(fds$samples, umap_df)
+
+
+p <- ggplot(umap_df, aes(x=umap1, y=umap2)) +
+  theme_minimal()
+
+p1 <- p + geom_point(aes(color=bg_auc), alpha = 0.8, size=2) +
+  scale_color_viridis_c()
+p1
+p1 <- p + geom_point(aes(color=frac_expr), alpha = 0.8, size=2) +
+  scale_color_viridis_c()
+p1
+p1 <- p + geom_point(aes(color=slide), alpha = 0.8, size=2) +
+  scale_color_manual(values=pals::cols25())
+p1
+
+
+# biological factors
+p1 <- p + geom_point(aes(color=factor(patient)), alpha = 0.8, size=2)
+p1
+p1 <- p + geom_point(aes(color=factor(acral)), alpha = 0.8, size=2) +
+  scale_color_manual(values=pals::cols25())
+p1
+p1 <- p + geom_point(aes(color=factor(sample_type)), alpha = 0.8, size=2) +
+  scale_color_manual(values=pals::cols25())
+p1
+p1 <- p + geom_point(aes(color=factor(os_quartile)), alpha = 0.8, size=2) +
+  scale_color_manual(values=pals::cols25())
+p1
+
+
+```
+
+## Clustering high variance genes
+
+```{r}
+library(pheatmap)
+
+y <- log2(normcounts)
+y <- most_cv_genes(y, 1000)
+
+s <- fds$samples %>% mutate(noise_quantile = ntile(desc(bg_auc), 4))
+
+annot_col <- column_to_rownames(s, "aoi") %>% 
+  select(sample_type = sample_type,
+         acral = acral, 
+         os_quartile = os_quartile,
+         slide = slide,
+         noise_quantile = noise_quantile) %>%
+  as.data.frame()
+
+p <- pheatmap(y,
+         scale="row",
+         show_rownames=FALSE,
+         show_colnames=FALSE,
+         border_color=NA,
+         clustering_method = "average",
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         breaks = seq(-3, 3, 0.05),
+         color = colorRampPalette(c("purple3", "black", "yellow2"))(120),
+         annotation_col = annot_col)
+
+f <- file.path(plot_dir, "heatmap_cluster_highcv_genes.pdf")
+save_pheatmap_pdf(p, filename=f, width=12, height=8)
+
+
+```
+
+
+## Differential expression analysis
+
+```{r de analysis setup}
+
+limma_rename_result_cols <- function(res) {
+  as_tibble(res, rownames="gene") %>%
+    select(gene,
+           log2fc=logFC,
+           avgexpr=AveExpr,
+           pval=P.Value,
+           padj=adj.P.Val)
+}
+
+de_format_results <- function(res, analysis, method, 
+                              padj_cutoff, log2fc_cutoff) {
+  mutate(res, 
+         de = case_when(padj > padj_cutoff ~ "no",
+                        log2fc < -log2fc_cutoff ~ "dn",
+                        log2fc > log2fc_cutoff ~ "up",
+                        TRUE ~ "no"),
+         analysis = analysis,
+         method = method)
+}
+
+run_limma_trend <- function(y, design, contrasts) {
+  fit <- lmFit(y, design)
+  fit <- contrasts.fit(fit, contrasts)
+  fit <- eBayes(fit, trend=TRUE)
+  return(fit)
+}
+
+process_limma <- function(fit, contrasts, method, 
+                          padj_cutoff, log2fc_cutoff) {
+  x <- NULL
+  for (coef in colnames(contrasts)) {
+    res <- topTable(fit, coef=coef, number=Inf, sort.by="none")
+    res <- limma_rename_result_cols(res)
+    res <- de_format_results(res, 
+                             analysis=coef, 
+                             method=method,
+                             padj_cutoff=padj_cutoff, 
+                             log2fc_cutoff=log2fc_cutoff)
+    x <- bind_rows(x, res)
+  }
+  return(x)
+}
+
+
+plot_de_volcano <- function(res) {
+  p <- ggplot(res, aes(x=log2fc, y=-log10(padj), color=de, size=de)) +
+    geom_point(alpha=0.7) +
+    geom_text_repel(data=subset(res, de != "no"), color="black", size=3, aes(label=gene), max.overlaps=Inf) +
+    scale_color_manual(values=c("no"="grey", "dn"="blue", "up"="red")) +
+    scale_size_manual(values=c("no"=1, "dn"=2, "up"=2)) +
+    theme_minimal() +
+    theme(legend.position="bottom") + 
+    theme(axis.line = element_line(color = "black"))
+    labs(x="log2fc", y="-log10(padj)")
+  return(p)
+}
+
+
+```
+
+
+## DE analysis
+
+```{r de analysis}
+
+# setup de analysis
+s <- fds$samples
+y <- log2(normcounts)
+de <- NULL
+method <- "limma_trend"
+
+
+# acral
+s$acral <- factor(s$acral, levels=c(0, 1))
+
+design <- stats::model.matrix(~0 + acral, data=s)
+contrasts <- limma::makeContrasts(acral = acral1 - acral0,
+                                  levels=design)
+fit <- run_limma_trend(y, design, contrasts)
+res <- process_limma(fit, contrasts, method, de_padj_cutoff, de_log2fc_cutoff) 
+de <- bind_rows(de, res)
+
+p <- plot_de_volcano(res) +
+  labs(title = "Acral vs. Non-Acral")
+p
+ggsave(file.path(plot_dir, "de_volcano_acral.pdf"), p)
+
+
+# Survival 3yr
+analysis <- "os_3yr"
+s$os_3yr <- factor(ifelse(s$os_quartile < 1, "under3yrs", "over3yrs"), levels=c("over3yrs", "under3yrs"))
+
+design <- stats::model.matrix(~ 0 + os_3yr, data=s)
+colnames(design) <- levels(s$os_3yr)
+contrasts <- limma::makeContrasts(os3yr = under3yrs - over3yrs,
+                                  levels=design)
+
+fit <- run_limma_trend(y, design, contrasts)
+res <- process_limma(fit, contrasts, method, de_padj_cutoff, de_log2fc_cutoff) 
+de <- bind_rows(de, res)
+p <- plot_de_volcano(res) + ggtitle("OS <3yr vs >3yr")
+p
+
+
+# Survival 5yr
+analysis <- "os_5yr"
+s$os_5yr <- factor(ifelse(s$os_quartile < 2, "under5yrs", "over5yrs"), levels=c("over5yrs", "under5yrs"))
+
+design <- stats::model.matrix(~ 0 + os_5yr, data=s)
+colnames(design) <- levels(s$os_5yr)
+contrasts <- limma::makeContrasts(os5yr = under5yrs - over5yrs,
+                                  levels=design)
+
+fit <- run_limma_trend(y, design, contrasts)
+res <- process_limma(fit, contrasts, method, de_padj_cutoff, de_log2fc_cutoff) 
+de <- bind_rows(de, res)
+p <- plot_de_volcano(res) + ggtitle("OS <5yr vs >5yr")
+p
+
+
+
+# Survival 9 yr
+analysis <- "os_9yr"
+s$os_9yr <- factor(ifelse(s$os_quartile < 3, "under9yrs", "over9yrs"), levels=c("over9yrs", "under9yrs"))
+
+design <- stats::model.matrix(~ 0 + os_9yr, data=s)
+colnames(design) <- levels(s$os_9yr)
+contrasts <- limma::makeContrasts(os9yr = under9yrs - over9yrs,
+                                  levels=design)
+fit <- run_limma_trend(y, design, contrasts)
+res <- process_limma(fit, contrasts, method, de_padj_cutoff, de_log2fc_cutoff) 
+de <- bind_rows(de, res)
+p <- plot_de_volcano(res) + ggtitle("OS <9yr vs >9yr")
+p
+ggsave(file.path(plot_dir, "de_volcano_os9yr.pdf"), p)
+
+
+
+# Survival q0 vs q3
+table(s$os_quartile)
+
+s$os_quartile <- factor(s$os_quartile)
+design <- stats::model.matrix(~ 0 + os_quartile, data=s)
+contrasts <- limma::makeContrasts(os_q0_vs_q3 = os_quartile0 - os_quartile3,
+                                  levels=design)
+fit <- run_limma_trend(y, design, contrasts)
+res <- process_limma(fit, contrasts, method, de_padj_cutoff, de_log2fc_cutoff) 
+
+de <- bind_rows(de, res)
+table(res$analysis)
+p <- plot_de_volcano(res) + ggtitle("OS <3yr vs >9yr")
+p
+ggsave(file.path(plot_dir, "de_volcano_os_q0_vs_q3.pdf"), p)
+
+
+de %>% filter(padj < 0.05)
+# de %>% filter(de != "no")
+# de %>% arrange(desc(avgexpr), desc(log2fc)) %>% distinct(gene, .keep_all=TRUE)
+# de %>% filter(gene == "LZTR1")
+
+# write gene expression data
+#write_xlsx(de_merged,
+#           file.path(working_dir, 'de_results.xlsx'))
+
+```
+
+## plot individual genes
+
+```{r plot genes}
+
+plot_gene <- function(s, x, gene, aes_x, aes_color) {
+  exprs <- unlist(x[gene, ])
+  x <- s %>% add_column(gene = exprs)
+  p <- ggplot(x, aes(x={{ aes_x }}, y=gene, fill={{aes_color}})) +
+    geom_boxplot(outlier.shape = NA, width=0.5) +
+    geom_point(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.5)) +
+    scale_fill_manual(values=pals::cols25()) +
+    ggtitle(paste0("Gene: ", gene)) +
+    theme_minimal() + 
+    theme(axis.text.x = element_text(color = "black", angle = 90, vjust = 0.5, hjust=1)) +
+    theme(axis.line = element_line(color = "black"))
+  return(p)
+}
+
+
+de %>% filter(gene == "PI15")
+
+
+p <- plot_gene(s, y, "AFAP1L2", os_quartile, os_quartile)
+ggsave(file.path(plot_dir, "gene_afap1l2_os.pdf"), p)
+
+
+plot_gene(s, y, "ATP5MC3", os_quartile, os_quartile)
+de %>% filter(padj < 0.05)
+
+
+```
+
+
+
+## GSEA
+
+```{r gsea}
+library(msigdbr)
+library(fgsea)
+library(GSVA)
+
+# read msigdb data and subset to expressed genes in dataset
+msigdb_gene_sets = msigdbr(species = "Homo sapiens")
+msigdb_gene_sets <- filter(msigdb_gene_sets, gene_symbol %in% fds$meta$gene) 
+
+# analysis across specific msigdb gene sets
+gs_hallmark <- filter(msigdb_gene_sets, gs_cat == "H")
+gs_hallmark <- split(x = gs_hallmark$gene_symbol, f = gs_hallmark$gs_name)
+gs_gobp <- filter(msigdb_gene_sets, gs_cat == "C5", gs_subcat == "GO:BP")
+gs_gobp <- split(x = gs_gobp$gene_symbol, f = gs_gobp$gs_name)
+gs_msigdb <- split(x = msigdb_gene_sets$gene_symbol, f = msigdb_gene_sets$gs_name)
+
+get_de_ranks <- function(de, a) {
+  ranks <- de %>% 
+    filter(analysis == a) %>%
+    select(gene, log2fc, padj) %>%
+    mutate(rank = log2fc)
+  ranks = sort(setNames(ranks$rank, ranks$gene), decreasing = TRUE)
+  return(ranks)
+}
+
+plot_gsea_enrichment <- function(x, ranks, gs) {
+  txt_stat <- paste0("ES=", round(x$ES,2), " NES=", round(x$NES, 2), " padj=", format(x$padj, scientific=TRUE, digits=3))
+  txt_title <- paste0("Gene set: ", x$pathway)
+  p <- plotEnrichment(gs[[x$pathway]], ranks) +
+    annotate(geom="text", x=150, y=0.1, label=txt_stat, hjust=0) +
+    labs(title = txt_title, 
+         xlab = "Rank",
+         ylab = "Enrichment Score") +
+    theme(plot.title = element_text(size=8))
+  return(p)
+}
+
+plot_gsea_barplot <- function(x, padj_cutoff = 0.01) {
+  x <- mutate(x, sig = ifelse(padj < padj_cutoff, ifelse(NES < 0, "dn", "up"), "no"),
+              neglog10padj = ifelse(padj < padj_cutoff, -log10(padj), NA))
+  p <- ggplot(x, aes(x=reorder(pathway, NES), y=NES, fill=neglog10padj)) +
+    geom_col() +
+    scale_fill_gradient(low = "blue", high = "cyan", na.value="#aaaaaa") +
+    coord_flip() +
+    labs(x="Analysis", y="Normalized Enrichment Score") +
+    theme_minimal()
+  return(p)
+}
+
+run_batch_fgsea <- function(my_analyses, my_de, my_gs, my_prefix, my_plot_dir, my_padj_cutoff=0.01) {
+  gsea <- NULL
+  for (a in my_analyses) {
+    ranks <- get_de_ranks(my_de, a)
+    res <- fgsea(pathways = my_gs, stats = ranks, minSize = 10, eps = 0, nPermSimple = 10000)
+    res <- mutate(res, analysis = a)
+    gsea <- bind_rows(gsea, res)
+    print(a)
+    # for (i in 1:nrow(res)) {
+    #   x <- res[i,]
+    #   if (x$padj >= my_padj_cutoff) { next }
+    #   print(x$pathway)
+    #   p <- plot_gsea_enrichment(x, ranks, my_gs)
+    #   f <- file.path(my_plot_dir, paste0(my_prefix, "_", a, "_gs_", x$pathway, ".pdf"))
+    #   ggsave(f, plot=p, device="pdf", width=5, height=3)
+    # }
+  }
+  return(gsea)
+}
+
+
+# human protein atlas prognostic genes 
+gs_hpa = list()
+hpa_mel_prog_unfav <- read_xlsx(hpa_mel_prog_xlsx, sheet="unfav") %>%
+  filter(Gene %in% fds$meta$gene)
+hpa_mel_prog_fav <- read_xlsx(hpa_mel_prog_xlsx, sheet="fav") %>%
+  filter(Gene %in% fds$meta$gene)
+gs_hpa$hpa_mel_prog_unfav <- hpa_mel_prog_unfav %>% pull(Gene)
+gs_hpa$hpa_mel_prog_fav  <- hpa_mel_prog_fav  %>% pull(Gene)
+
+# run fgsea
+analyses <- unique(de$analysis)
+
+# gsea hpa
+prefix <- "gsea_hpa"
+padj_cutoff <- 0.01
+gsea <- run_batch_fgsea(analyses, de, gs_hpa, prefix, plot_dir, padj_cutoff)
+gsea <- as_tibble(gsea)
+
+# gsea hallmark
+prefix <- "gsea_hallmark"
+gsea <- run_batch_fgsea(analyses, de, gs_hallmark, prefix, plot_dir, padj_cutoff)
+gsea <- as_tibble(gsea)
+
+gsea %>% filter(analysis == "os_q0_vs_q3", pathway=="HALLMARK_OXIDATIVE_PHOSPHORYLATION") %>% pull(leadingEdge)
+
+
+p <- plot_gsea_barplot(filter(gsea, analysis == "os_q0_vs_q3"))
+p
+ggsave(file.path(plot_dir, "gsea_hallmark_os_q0_vs_q3.pdf"), p, height=8)
+
+p <- plot_gsea_barplot(filter(gsea, analysis == "acral"))
+p
+ggsave(file.path(plot_dir, "gsea_hallmark_acral.pdf"), p, height=8)
+
+
+
+
+
+table(gsea$analysis)
+
+p <- plot_gsea_barplot(x) +
+  labs(title = "Hallmark gene sets")
+p
+
+
+# gsea gobp
+prefix <- "gsea_gobp"
+gsea <- fgsea(pathways=gs_gobp, stats=ranks, minSize=10, eps=0, nPermSimple=10000)
+gsea <- as_tibble(gsea)
+
+# gsea msigdb
+prefix <- "gsea_msigdb"
+gsea <- run_batch_fgsea(analyses, de, gs_msigdb, prefix, plot_dir, padj_cutoff)
+gsea <- as_tibble(gsea)
+
+# write gsea results
+f <- file.path(working_dir, paste0("gsea_msigdb_", analysis, "_results.xlsx"))
+write_xlsx(gsea, f)
+
+
+
+
+gsea %>% filter(pathway == "GOCC_PIGMENT_GRANULE") %>% pull(leadingEdge)
+
+
+
+top25up <- gsea %>%
+  filter(padj < gsea_padj_cutoff) %>%
+  slice_max(NES, n = 25) %>%
+  arrange(desc(NES)) %>%
+  pull(pathway)
+top25dn <- gsea %>%
+  filter(padj < gsea_padj_cutoff) %>%
+  slice_min(NES, n = 25) %>%
+  arrange(desc(NES)) %>%
+  pull(pathway)
+top50pathways <- unique(c(top25up, top25dn))
+
+x <- gsea %>% filter(pathway %in% top50pathways)
+x$pathway <- gsub("GOBP_", "", x$pathway)
+x$pathway <- substr(x$pathway, 1, 50)
+
+p <- plot_gsea_barplot(x) +
+  labs(title = "GOBP gene sets",
+       subtitle = "Published RNA-Seq cohorts")
+p
+
+
+for (i in 1:nrow(gsea)) {
+  x <- gsea[i,]
+  p <- plot_gsea_enrichment(x, ranks, cptac_gs)
+  f <- file.path(plot_dir, paste0("st_pdac_", x$pathway, ".pdf"))
+  ggsave(f, plot=p, device="pdf", width=5, height=3)
+}
+
+
+table(de$analysis)
+analysis = "os_q0_vs_q3"
+ranks <- get_de_ranks(de, analysis)
+
+gsea <- fgsea(pathways=gs_hallmark, stats=ranks, minSize=10, eps=0, nPermSimple=10000)
+gsea <- fgsea(pathways=gs_hpa, stats=ranks, minSize=10, eps=0, nPermSimple=10000)
+gsea <- fgsea(pathways=gs_msigdb, stats=ranks, minSize=10, eps=0, nPermSimple=10000)
+
+
+```
+
+
+
+## QC plots: count distributions
+
+```{r background noise by aoi}
+
+# sample annotations to use in plots
+st_geomx_plot_count_distribution(ds, sample_type, sample_type)
+
+
+```
+
+
+## Misc QC plots
+
+```{r misc qc plots}
+
+p <- ggplot(ds$samples, aes(x=ROICoordinateX, y=ROICoordinateY, color=bg_auc)) +
+  geom_point() +
+  scale_color_viridis_c() +
+  facet_wrap(~ slide)
+p
+
 
 p <- ggplot(ds$samples, aes(x=num_counts, y=frac_expr, color=slide)) +
   geom_point(alpha=0.6) +
@@ -149,394 +1292,8 @@ ggsave(file.path(plot_dir, "geomx_scatter_counts_vs_frac_expr.pdf"), p)
 p + facet_wrap(~ slide)
 ggsave(file.path(plot_dir, "geomx_scatter_counts_vs_frac_expr_byslide.pdf"), p)
 
-```
-
-
-## Background noise and subtraction
-
-```{r ridge plot unnormalized counts}
-
-# sample annotations to use in plots
-#y <- select(s, aoi, slide, keep, bg_auc, acral, sample_type, os_quartile, vital_status, lymph_node, distant_mets)
-
-# sample annotations to use in plots
-y <- select(ds$samples, aoi, slide, keep)
-
-# compute cpm (before background subtract)
-x <- cpm(ds$counts)
-# bind to meta
-x <- bind_cols(ds$meta, x)
-# join to sample annotations
-x <- x %>%
-  pivot_longer(colnames(ds$counts), names_to="aoi", values_to="count") %>%
-  inner_join(y, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
-
-```
-
-## ridge plot background noise
-
-```{r background noise by aoi}
-
-plot_aoi_dist <- function(x) {
-  # ridge plot showing variability in background noise
-  p <- ggplot(x, aes(x=count, y=reorder(factor(aoi), count), fill=factor(slide))) +
-    stat_density_ridges(color="#00000066", alpha=0.4, scale=20, rel_min_height=0.001, quantile_lines=TRUE, quantiles=0.5) + 
-    scale_x_log10() +
-    scale_fill_manual(values = pals::cols25()) +
-    xlab("CPM") +
-    ylab("AOIs") +
-    labs(fill = "Neg. Probes") +
-    theme_ridges() + 
-    theme(axis.text.y = element_blank()) + 
-    facet_grid(slide ~ ., scales="free_y")
-  return(p)
-}
-
-
-plot_aoi_bg_vs_signal <- function(x) {
-  # plot: compared median counts to bg counts
-  y <- x %>%
-    group_by(aoi, bg) %>%
-    summarise(keep_aoi = first(keep_aoi),
-              slide = first(slide),
-              geomeancpm = geomean(count),
-              mediancpm = median(count),
-              q3cpm = quantile(count, 0.75))
-
-  p1 <- ggplot(y, aes(x=mediancpm, 
-                     y=reorder(factor(aoi), mediancpm), 
-                     color=factor(bg),
-                     shape=factor(keep_aoi))) +
-    geom_point(size=1, alpha=0.5) +
-    scale_color_manual(values = pals::cols25()) +
-    theme_minimal() +
-    theme(axis.text.y = element_blank(),
-          panel.grid.major.y = element_blank(),
-          panel.grid.minor.y = element_blank()) +
-    labs(color = "BG", shape = "Keep AOI", x="Median CPM", y="AOI",
-         title="Median CPM")
-  
-  y <- y %>% 
-    pivot_wider(names_from="bg", values_from=c("geomeancpm", "mediancpm", "q3cpm"))
-
-  bg_gene_cor <- cor.test(y$mediancpm_TRUE, y$mediancpm_FALSE)$estimate
-  label_cor <- sprintf("r = %.2f", bg_gene_cor)
-  p2 <- ggplot(y, aes(x=mediancpm_FALSE, y=mediancpm_TRUE, color=keep_aoi)) +
-    geom_point(alpha=0.6) + 
-    geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, color="red", linetype="dashed") +
-    scale_color_manual(values = pals::cols25()) +
-    theme_minimal() + 
-    labs(color="Keep AOI", 
-         x="median CPM background", y="median CPM genes",
-         title="Median BG vs Gene expression per ROI",
-         subtitle=label_cor)
-  return(p1 + p2)
-}
-
-
-p <- plot_aoi_dist(x %>% filter(bg))
-p
-f <- file.path(plot_dir, "qc_ridge_aoi_bg_dist.pdf")
-ggsave(f, plot=p, device="pdf", width = 8, height = 8)
-
-p <- plot_aoi_bg_vs_signal(x)
-p
-f <- file.path(plot_dir, "qc_aoi_bg_vs_signal.pdf")
-ggsave(f, plot=p, device="pdf")
-
-
-
-
-```
-
-
-
-
-```{r compare cpm signal to bg}
-
-# plot: compared median counts to bg counts
-xstats <- x %>%
-  group_by(aoi, expressed) %>%
-  summarise(keep_aoi = first(keep_aoi),
-            slide = first(slide),
-            bg_auc = first(bg_auc),
-            geomeancpm = geomean(count),
-            mediancpm = median(count),
-            q3cpm = quantile(count, 0.75))
-
-p <- ggplot(xstats, aes(x=mediancpm, 
-                        y=reorder(factor(aoi), mediancpm), 
-                        color=factor(expressed),
-                        shape=factor(keep_aoi))) +
-  geom_point(size=2, alpha=0.5) +
-  scale_color_manual(values = pals::cols25()) +
-  theme_minimal() +
-  theme(axis.text.y = element_blank()) +
-  labs(color = "Expressed", shape = "Keep AOI", x="Median CPM", y="AOI")
-p
-f <- file.path(plot_dir, "qc_dot_plot_mediancpm_by_aoi.pdf")
-ggsave(f, plot=p, device="pdf")
-
-
-
-p <- ggplot(xstats, aes(x=mediancpm, 
-                        y=reorder(factor(aoi), mediancpm), 
-                        color=factor(bg_auc > 0.65),
-                        shape=factor(expressed))) +
-  geom_point(size=2, alpha=0.5) +
-  scale_color_manual(values = pals::cols25()) +
-  scale_x_log10() +
-  theme_minimal() +
-  theme(axis.text.y = element_blank()) +
-  labs(color = "bg auc > 0.65", shape = "Expressed", x="Median CPM", y="AOI")
-p
-
-
-xstats <- xstats %>% 
-  pivot_wider(names_from = "expressed", values_from=c("geomeancpm", "mediancpm", "q3cpm"))
-
-corlab <- paste0("r = ", round(cor.test(xstats$mediancpm_bg, xstats$mediancpm_yes)$estimate, 2))
-p <- ggplot(xstats, aes(x=mediancpm_bg, y=mediancpm_yes, color=bg_auc)) +
-  geom_point() + 
-  scale_color_viridis_c() +
-  geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, color="red", linetype="dashed") +
-  annotate("text", x=60, y=60, label = corlab) +
-  theme_minimal() + 
-  labs(x="median CPM background", y="median CPM expressed")
-p
-f <- file.path(plot_dir, "qc_scatter_cpm_median_bg_vs_expressed.pdf")
-ggsave(f, plot=p, device="pdf")
-
-corlab <- paste0("r = ", round(cor.test(xstats$q3cpm_bg, xstats$q3cpm_yes)$estimate, 2))
-p <- ggplot(xstats, aes(x=q3cpm_bg, y=q3cpm_yes)) +
-  geom_point() + 
-  geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, color="red", linetype="dashed") +
-  annotate("text", x=60, y=60, label = corlab) +
-  theme_minimal() + 
-  labs(x="Q3 CPM background", y="Q3 CPM expressed")
-p
-f <- file.path(plot_dir, "qc_scatter_cpm_q3_bg_vs_expressed.pdf")
-ggsave(f, plot=p, device="pdf")
-
-```
-
-
-## background subtraction
-
-
-```{r background subtraction cpm}
-
-# bind gene and bg counts
-m <- bind_rows(ds$meta, ds$bgmeta) %>%
-  mutate(expressed = case_when(bg ~ "bg", !keep ~ "no", TRUE ~ "yes"))
-
-# compute bgsub cpm
-x <- bind_rows(ds$counts, ds$bgcounts)
-x <- background_subtract(x, s$bg_geomean)
-x <- cpm(x)
-
-# bind meta with counts
-x <- bind_cols(m, x)
-
-# join with sample metadata
-x <- x %>%
-  pivot_longer(colnames(ds$counts), names_to="aoi", values_to="count") %>%
-  inner_join(y, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
-
-# plot: compared median counts to bg counts
-xstats <- x %>%
-  group_by(aoi, expressed) %>%
-  summarise(keep_aoi = first(keep_aoi),
-            slide = first(slide),
-            geomeancpm = geomean(count),
-            mediancpm = median(count),
-            q3cpm = quantile(count, 0.75))
-
-p <- ggplot(xstats, aes(x=mediancpm, 
-                        y=reorder(factor(aoi), mediancpm), 
-                        color=factor(expressed),
-                        shape=factor(keep_aoi))) +
-  geom_point(size=2, alpha=0.5) +
-  scale_color_manual(values = pals::cols25()) +
-  theme_minimal() +
-  theme(axis.text.y = element_blank()) +
-  labs(color = "Expressed", shape = "Keep AOI", x="Median CPM", y="AOI")
-p
-f <- file.path(plot_dir, "qc_dot_plot_bgsubcpm_median_by_aoi.pdf")
-ggsave(f, plot=p, device="pdf")
-
-
-xstats <- xstats %>% 
-  pivot_wider(names_from = "expressed", values_from=c("geomeancpm", "mediancpm", "q3cpm"))
-
-corlab <- paste0("r = ", round(cor.test(xstats$mediancpm_bg, xstats$mediancpm_yes)$estimate, 2))
-p <- ggplot(xstats, aes(x=mediancpm_bg, y=mediancpm_yes)) +
-  geom_point() + 
-  geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, color="red", linetype="dashed") +
-  annotate("text", x=20, y=20, label = corlab) +
-  theme_minimal() + 
-  labs(x="median CPM background", y="median CPM expressed")
-p
-f <- file.path(plot_dir, "qc_scatter_bgsubcpm_median_bg_vs_expressed.pdf")
-ggsave(f, plot=p, device="pdf")
-
-
-corlab <- paste0("r = ", round(cor.test(xstats$q3cpm_bg, xstats$q3cpm_yes)$estimate, 2))
-p <- ggplot(xstats, aes(x=q3cpm_bg, y=q3cpm_yes)) +
-  geom_point() + 
-  geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, color="red", linetype="dashed") +
-  annotate("text", x=20, y=20, label = corlab) +
-  theme_minimal() + 
-  labs(x="Q3 CPM background", y="Q3 CPM expressed")
-p
-f <- file.path(plot_dir, "qc_scatter_bgsubcpm_q3_bg_vs_expressed.pdf")
-ggsave(f, plot=p, device="pdf")
-
-```
-
-
-
-
-```{r}
-
-
-
-
-# cpm (with qnorm)
-x <- get_bgsub_qnorm_cpm(counts_probe, samples)
-x <- x %>%
-  pivot_longer(fmetadata$aoi_id, names_to="aoi_id", values_to="count") %>%
-  inner_join(y, by=c("aoi_id"="aoi_id"))
-x <- x %>%
-  group_by(aoi_id, expressed) %>%
-  summarise(slide_id = unique(slide_id),
-            mediancpm = median(count),
-            q3cpm = quantile(count, 0.75)) %>%
-  ungroup()
-p <- ggplot(x, aes(x=mediancpm, y=reorder(factor(aoi_id), mediancpm), color=factor(expressed))) +
-  geom_point(size=2) +
-  scale_color_manual(values = pals::cols25()) +
-  labs(color = "Expressed", x="Median CPM", y="ROI") + 
-  theme_ridges() + 
-  theme(axis.text.y = element_blank())
-p
-f <- file.path(plot_dir, "qc_point_plot_bgsub_qnorm_cpm_by_aoi.pdf")
-ggsave(f, plot=p, device="pdf")
-
-
-#
-# normalized count ridge plots
-#
-# qnorm
-x <- get_bgsub_qnorm_cpm(counts_probe, samples)
-x <- DGEList(counts = log2(select(x, samples$aoi_id)), 
-             samples = samples, 
-             genes = select(x, -samples$aoi_id))
-x <- bind_cols(x$genes, x$counts)
-y <- select(samples, aoi_id, slide_id, segment, histology, path)
-x <- x %>%
-  pivot_longer(samples$aoi_id, names_to="aoi_id", values_to="count") %>%
-  inner_join(y, by=c("aoi_id"="aoi_id"))
-
-# by aoi
-p <- x %>%
-  ggplot(aes(x=count, y=factor(aoi_id), fill=factor(expressed))) +
-  stat_density_ridges(alpha=0.7, scale=10, rel_min_height=0.001, quantile_lines=TRUE) + 
-  xlab("log2(Counts per million reads)") +
-  ylab("Slides") +
-  labs(fill = "Expressed") +
-  theme_ridges() + 
-  theme(axis.text = element_text(size=5))
-p
-f <- file.path(plot_dir, "ridge_plot_unfiltered_probes_by_aoi.pdf")
-ggsave(f, plot=p, device="pdf", width = 8, height = 8)
-
-# by path
-p <- x %>%
-  ggplot(aes(x=count, y=factor(path), fill=factor(expressed))) +
-  stat_density_ridges(alpha=0.7, scale=10, rel_min_height=0.001, quantile_lines=TRUE) + 
-  xlab("log2(Counts per million reads)") +
-  ylab("Slides") +
-  labs(fill = "Expressed") +
-  theme_ridges() + 
-  theme(axis.text = element_text(size=5))
-p
-f <- file.path(plot_dir, "ridge_plot_unfiltered_probes_by_path.pdf")
-ggsave(f, plot=p, device="pdf", width = 8, height = 8)
-
-# by histology
-p <- x %>%
-  ggplot(aes(x=count, y=factor(histology), fill=factor(expressed))) +
-  stat_density_ridges(alpha=0.7, scale=10, rel_min_height=0.001, quantile_lines=TRUE) + 
-  xlab("log2(Counts per million reads)") +
-  ylab("Slides") +
-  labs(fill = "Expressed") +
-  theme_ridges() + 
-  theme(axis.text = element_text(size=5))
-p
-f <- file.path(plot_dir, "ridge_plot_unfiltered_probes_by_histology.pdf")
-ggsave(f, plot=p, device="pdf", width = 8, height = 8)
-
-
-#
-# filtered normalized gene ridge plots
-#
-x <- norm_count_lcpm
-x <- as_tibble(x, rownames("gene_symbol"))
-y <- select(fmetadata, aoi_id, slide_id, segment, histology, path, histpath)
-x <- x %>%
-  pivot_longer(fmetadata$aoi_id, names_to="aoi_id", values_to="count") %>%
-  inner_join(y, by=c("aoi_id"="aoi_id"))
-
-p <- x %>%
-  ggplot(aes(x=count, y=factor(aoi_id), fill=factor(slide_id))) +
-  stat_density_ridges(alpha=0.7, scale=10, rel_min_height=0.001, quantile_lines=TRUE) + 
-  scale_fill_manual(values = color_scales$slide_id) +
-  xlab("log2(cpm)") +
-  ylab("AOIs") +
-  labs(fill = "Slide #") +
-  theme_ridges() +
-  theme(axis.text = element_text(size=5))
-p
-f <- file.path(plot_dir, "ridge_plot_log2cpm_by_aoislide.pdf")
-ggsave(f, plot=p, device="pdf", width = 8, height = 8)
-
-p <- filter(x, segment == "panck") %>%
-  ggplot(aes(x=count, y=path, fill=path)) +
-  stat_density_ridges(alpha=0.7, scale=3, rel_min_height=0.001, quantile_lines=TRUE) + 
-  scale_fill_manual(values = color_scales$path) +
-  xlab("log2(cpm)") +
-  ylab("Pathology") +
-  labs(fill = "Pathology") +
-  theme_ridges() + 
-  theme(legend.position="bottom")
-p
-f <- file.path(plot_dir, "ridge_plot_log2cpm_by_path.pdf")
-ggsave(f, plot=p, device="pdf", width = 4, height = 4)
-
-p <- filter(x, segment == "panck") %>%
-  ggplot(aes(x=count, y=histology, fill=histology)) +
-  stat_density_ridges(alpha=0.7, scale=3, rel_min_height=0.001, quantile_lines=TRUE) + 
-  scale_fill_manual(values = color_scales$histology) +
-  xlab("log2(cpm)") +
-  ylab("Histology") +
-  labs(fill = "Histology") +
-  theme_ridges() + 
-  theme(legend.position="bottom")
-p
-f <- file.path(plot_dir, "ridge_plot_log2cpm_by_hist.pdf")
-ggsave(f, plot=p, device="pdf", width = 4, height = 4)
-
-
-````
-
-
-
-
-```{r misc qc plots}
-
 # figure: AOINucleiCount versus num_counts
-p <- ggplot(s, aes(x=AOINucleiCount, y=num_counts)) +
+p <- ggplot(ds$samples, aes(x=AOINucleiCount, y=num_counts)) +
   geom_point() +
   scale_y_log10() +
   labs(x="AOI Nuclei Count", y="Total Counts",
@@ -546,7 +1303,7 @@ p
 ggsave(file.path(plot_dir, "geomx_scatter_nuclei_vs_counts.pdf"), p)
 
 # figure: counts versus background levels
-p <- ggplot(s, aes(x=num_counts, y=snr_q3, color=keep)) +
+p <- ggplot(ds$samples, aes(x=num_counts, y=snr_q3, color=keep)) +
   geom_point(alpha=0.5) +
   scale_x_log10() +
   scale_y_log10() +
@@ -561,49 +1318,89 @@ ggsave(file.path(plot_dir, "geomx_scatter_counts_vs_snrq3.pdf"), p)
 ```
 
 
+```{r exploratory bgcorrect work}
 
-## Raw count distributions
+bad_aoi <- ds$samples %>% arrange(bg_auc) %>% head(1) %>% pull(aoi)
+good_aoi <- ds$samples %>% arrange(desc(bg_auc)) %>% head(1) %>% pull(aoi)
+bg <- ds$meta$bg
+# between 0 and 0.5
+theta <- 0.25
 
-```{r raw count distributions}
+x <- unlist(ds$counts[, bad_aoi])
+x <- log2(x)
+xbg <- x[bg]
 
-p <- x %>%
-  ggplot(aes(x=count, y=reorder(factor(aoi), count), fill=factor(bg))) +
-  stat_density_ridges(color="#ffffff00", alpha=0.4, scale=20, rel_min_height=0.001, quantile_lines=FALSE) + 
-  scale_x_continuous(trans="log10") +
-  scale_fill_manual(values = pals::cols25()) +
-  theme_ridges() + 
-  theme(axis.text.y = element_blank()) + 
-  labs(x="raw counts", y="AOIs", fill="bg") +
-#  theme(axis.text = element_text(size=5)) + 
-  facet_grid(slide ~ ., scales="free_y")
+xnew <- bgcorrect(x, xbg, theta=0.25, bw.adjust=3, n=10000, eps=1e-10)
+plot(x, xnew)
+
+xmin <- min(x)
+xmax <- max(x)
+dbg <- density(xbg, adjust=3, from=xmin, to=xmax, n=10000)
+ybg <- cumsum(dbg$y) / sum(dbg$y)
+qbg <- approx(dbg$x, ybg, xout=x, rule=2)$y
+
+
+idx <- which(xbg >= quantile(xbg, theta) & xbg <= quantile(xbg, 1-theta))
+xbgsubset <- xbg[idx]
+ybgsubset <- (rank(xbg)/length(xbg))[idx]
+out <- lm(xbgsubset ~ ybgsubset)
+b <- out$coefficients[1]
+m <- out$coefficients[2]
+
+
+ybg <- m * qbg + b
+x - ybg
+plot(x, ybg)
+plot(xbgsubset, ybgsubset)
+
+bad_aoi <- ds$samples %>% arrange(bg_auc) %>% head(1) %>% pull(aoi)
+good_aoi <- ds$samples %>% arrange(desc(bg_auc)) %>% head(1) %>% pull(aoi)
+bg <- ds$meta$bg
+
+x <- unlist(ds$counts[, good_aoi])
+x <- log2(x)
+xbg <- x[bg]
+#xmin <- min(x)
+#xmax <- max(x)
+xmin <- min(xbg)
+xmax <- max(xbg)
+
+#d <- density(x, adjust=3, from=xmin, to=xmax, n=10000)
+dbg <- density(xbg, adjust=3, from=xmin, to=xmax, n=10000)
+eps <- 1e-10
+ybg <- cumsum(dbg$y + eps) / sum(dbg$y + eps)
+qbg <- approx(dbg$x, ybg, xout=x, rule=2)$y
+
+approx(ybg, dbg$x, xout = qbg)
+
+y <- ybg
+z <- rep(NA, 9998)
+for (i in 1:9998) {
+  z[i] <- y[i+2] - 2*y[i+1] + y[i]
+}
+min(which(z < 0))
+
+
+plot(approx(ybg, dbg$x, xout = qbg), pch=19, cex=0.5)
+
+
+plot(dbg$x, ybg)
+plot(x, y)
+xnew <- x - approx(ybg, dbg$x, xout=qbg, rule=2)$y
+plot(x, quantile(xbg, probs=qbg, names=FALSE), pch=19, cex=0.5)
+xnew <- x - quantile(xbg, probs=qbg, names=FALSE)
+plot(x, xnew)
+
+
+outx <- density(x, adjust=3)
+data <- bind_cols(x=outx$x, y=outx$y)
+databg <- bind_cols(x=outbg$x, y=outbg$y)
+p <- ggplot() + 
+  geom_line(data=databg, aes(x, y)) +
+  geom_line(data=data, aes(x,y), color="red")
 p
-ggsave(file.path(plot_dir, "qc_ridge_raw_aoi.pdf"), p, width = 8, height = 8)
 
-p <- x %>%
-  ggplot(aes(x=count, y=reorder(factor(aoi), count), fill=factor(keep_aoi))) +
-  stat_density_ridges(color="#ffffff00", alpha=0.4, scale=20, rel_min_height=0.001, quantile_lines=FALSE) + 
-  scale_x_continuous(trans="log10") +
-  scale_fill_manual(values = pals::cols25()) +
-  theme_ridges() + 
-  theme(axis.text.y = element_blank()) + 
-  labs(x="raw counts", y="AOIs", fill="Keep AOI") +
-#  theme(axis.text = element_text(size=5)) + 
-  facet_grid(slide ~ ., scales="free_y")
-p
-ggsave(file.path(plot_dir, "qc_ridge_raw_aoi_keep.pdf"), p, width = 8, height = 8)
 
-p <- x %>%
-  ggplot(aes(x=count, y=reorder(factor(slide), count), fill=factor(bg))) +
-  stat_density_ridges(alpha=0.5, scale=10, rel_min_height=0.001, quantile_lines=TRUE) + 
-  scale_x_continuous(trans="log10") +
-  scale_fill_manual(values = pals::cols25()) +
-  theme_ridges() + 
-  theme(axis.text.y = element_blank()) + 
-  labs(x="raw counts", y="Slides", fill="bg") +
-#  theme(axis.text = element_text(size=5)) + 
-  facet_grid(slide ~ ., scales="free_y")
-p
-ggsave(file.path(plot_dir, "qc_ridge_raw_slide.pdf"), p, width = 8, height = 8)
+
 
 ```
-
