@@ -165,190 +165,153 @@ ggsave(file.path(plot_dir, "qc_gene_filtering_fpr_auc.pdf"), p)
 ```
 
 
-## BG Correction
+## BG correction using normal approximation
+
+```{r bg correction normal approximation}
 
 
-```{r bgcorrect}
+st_geomx_bgcorrect_norm <- function(x, bg) {
 
-bgquants <- function(x, xbg, bw.adjust=3, n=10000, eps=1e-10) {
-  # quantiles of background signal corresponding to signal
-  xmin <- min(x)
-  xmax <- max(x)
-  d <- density(xbg, adjust=bw.adjust, from=xmin, to=xmax, n=n)
-  bgcdf <- d$y + eps
-  bgcdf <- cumsum(d$y) / sum(d$y)
-  q <- approx(d$x, bgcdf, xout=x)$y
-  #q <- approx(d$x, bgcdf, xout=x, rule=2)$y
-  return(q)
-}
-
-
-bglm <- function(xbg, theta) {
-  # linear model of background in quantile window [theta, 1-theta]
-  idx <- which(xbg >= quantile(xbg, theta) & xbg <= quantile(xbg, 1-theta))
-  xbgsubset <- xbg[idx]
-  ybgsubset <- (rank(xbg, ties.method="random")/length(xbg))[idx]
-  out <- lm(xbgsubset ~ ybgsubset)
-  b <- out$coefficients[1]
-  m <- out$coefficients[2]
-  
-  f <- function(quants) {
-    noise <- m * quants + b
-    return(noise)
+  apply_bgcorrect <- function(x) {
+    a <- sd(x[bg])^2 / sd(x[!bg])^2
+    c <- a * mean(x[!bg]) - mean(x[bg])
+    y <- (1-a)*x + c
+    return(y)
   }
-  return(f)
-}
-
-
-st_geomx_bgcorrect <- function(x, bg, theta=0.25, bw.adjust=3, n=10000, eps=1e-10, min.count=1) {
-
-  apply_bgcorrect <- function(x, bg) {
-    x <- log2(x)
-    qbg <- bgquants(x, x[bg], bw.adjust, n, eps)
-    noise_func <- bglm(x[bg], theta)
-    ybg <- noise_func(qbg)
-    return(2^(x) - 2^(ybg))
-    #return(x - ybg)
-  }  
-  
   x <- apply(x, MARGIN=2, FUN=apply_bgcorrect)
-  x <- apply(x, 2, pmax, min.count)
+  x <- apply(x, 2, pmax, 0)
   return(x)
 }
 
 
+
+
 bg <- ds$meta$bg
-x <- cpm(ds$counts)
-x <- log2(x)
-xmin <- 0
-xmax <- max(x)
-eps <- 1e-6
-bw <- 1
-n <- 10000
+x <- log2(cpm(ds$counts))
 
-x1 <- unlist(x[, "s03_r030_fullroi"])
+#x1 <- unlist(x[, "s03_r030_fullroi"])
+x1 <- unlist(x[, "s06_r044_fullroi"])
 #x1 <- unlist(x[, "s04_r058_fullroi"])
-x1bg <- x1[bg]
-x1min <- min(x1)
-x1max <- max(x1)
 
-d <- density(x1, bw=bw, from=x1min, to=x1max, n=n)
-dbg <- density(x1bg, bw=bw, from=x1min, to=x1max, n=n)
-lr <- d$y / dbg$y
-pbg <- 1 / (1 + lr)
-pbgcdf <- cumsum(pbg)
-noise <- x1min + (x1max - x1min) * pbgcdf / n
+bgvar <- sd(x1[bg])^2
+bgmean <- mean(x1[bg])
+x1var <- sd(x1)^2
+x1mean <- mean(x1)
 
-y1 <- approx(d$x, noise, xout=x1)$y
+a <- bgvar / x1var
+m <- 1 - a
+c <- a * x1mean - bgmean
 
-plot(x1, x1 - y1, cex=0.1, pch=19)
+y1 <- m*x1 + c
 
-tbl <- bind_cols(dx=d$x, dy=d$y, dbgx=dbg$x, dbgy=dbg$y, lr=lr, 
+
+
+tbl <- bind_cols(dx=d$x, dy=d$y, dbgx=dbg$x, dbgy=dbg$y, lr=lr,
                  pbg=pbg, pbgcdf=pbgcdf, noise=noise)
-ggplot(tbl) + 
-  geom_line(aes(dx, noise)) +
-  geom_hline(yintercept = median(x1bg), color="red", linetype="dashed")
-
-tbl <- bind_cols(x1=x1, y1=y1)
-ggplot(tbl) + 
-  geom_line(aes(x1,y1)) +
-  geom_line(aes(x1, x1-y1), color="red") +
-  geom_hline(yintercept = median(x1bg), color="red", linetype="dashed") +
-  geom_hline(yintercept = mean(x1bg), color="blue", linetype="dashed")
-
-
-
-range(x1bg)
-
-
-y <- approx(d$x, d$y, xout=x1)$y
-ybg <- approx(dbg$x, dbg$y, xout=x1)$y
-
-lr <- y / ybg
-pbg <- 1 / (1 + lr)
-cumsum(pbg)
-
-plot(x1, cumsum(pbg), xlim=c(0,1000))
-
-tbl <- bind_cols(dx=d$x, dy=d$y, dbgx=dbg$x, dbgy=dbg$y)
-ggplot(tbl) + 
-  geom_line(aes(dbgx, dbgy)) +
-  xlim(1, 1000)
-
-
-y <- approx(d$x, d$y, xout=x1)$y
-ybg <- approx(dbg$x, dbg$y, xout=x1)$y
-
-
-
-tbl <- bind_cols(dx = d$x, dy = d$y, dbgx=dbg$x, dbgy=dbg$y)
 ggplot(tbl) +
   geom_line(aes(dx, dy)) +
-  geom_line(aes(dbgx, dbgy), color="red")
+  geom_line(aes(dbgx, dbgy), color="red") +
+  geom_line(aes(dx, 2* pbg), color="blue")
 
-
-
-dcdf <- cumsum(d$y + eps) / sum(d$y + eps)
-dbgcdf <- cumsum(dbg$y + eps) / sum(dbg$y + eps)
-
-y <- approx(d$x, dcdf, xout=x1)$y
-ybg <- approx(d$x, dbgcdf, xout=x1)$y
-
-y <- approx(d$x, dcdf, xout=10)$y
-ybg <- approx(d$x, dbgcdf, xout=10)$y
-
-
-noise <- x1 * (1-ybg) / (1-y)
-plot(x1, noise)
-plot(x1, (1 - ybg) / (1 - y))
-(1 - ybg) / (1 - y)
-(1 - ybg) / (1 - y)
-(1 - y) / (1 - ybg)
-
-
-tbl <- bind_cols(dx = d$x, dy = dcdf, dbgx=dbg$x, dbgy=dbgcdf)
 ggplot(tbl) +
-  geom_line(aes(dx, dy)) +
-  geom_line(aes(dbgx, dbgy), color="red")
+  geom_line(aes(dx, noise))
 
 
+tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
+                 bind_cols(value = y1, bgcorrect="after", bg=bg), 
+                 bind_cols(value = x1-y1, bgcorrect="noise", bg=bg))
 
-bgdensity <- density(x1bg, adjust=3, from=xmin, to=xmax, n=100000)
-bgcdf <- cumsum(bgdensity$y + eps) / sum(bgdensity$y + eps)
-bgq <- approx(bgdensity$x, bgcdf, xout=x1, rule=2)$y
-
-plot(density(bgq))
-plot(ecdf(bgdensity$y))
-
-y <- approx(bgcdf, bgdensity$x, xout=q)$y
-plot(bgcdf, bgdensity$x)
-plot(x1, y)
-plot(d$x, bgcdf, cex=0.5, pch=19)
-
-qbg <- bgquants(x1, x1[bg])
-noise_func <- bglm(x1[bg], theta=0.4)
-
-plot(x1, qbg)
-hist(x1[bg])
-max(x1[bg])
-x1[bg]
-quantile(x1[bg], 0.4)
-quantile(x1[bg], 0.6)
-plot(sort(x1[bg]))
-xbg <- x1[bg]
-theta <- 0.4
+ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
+  stat_density_ridges(alpha=0.5)
 
 
-ybg <- noise_func(qbg)
+tbl <- bind_cols(x1= x1, y1 = y1, bg= bg)
+ggplot(tbl) + 
+  geom_point(data=filter(tbl, bg), aes(x1, x1-y1), color="red") +
+  geom_line(data=filter(tbl, !bg), aes(x1, x1-y1), color="black") +
+#  geom_line(aes(x1, x1-y1), color="red") +
+  geom_hline(yintercept = mean((x1-y1)[bg]), color="red", linetype="dashed") +
+  geom_vline(xintercept = mean(x1[bg]), color="red", linetype="dashed")
 
-plot(x1, ybg)
-summary(ybg)
-plot(x1, ybg)
-xnew <- (2^x1 - 2^ybg)
-xnew <- pmax(xnew, 1)
-x <- st_geomx_bgcorrect(ds, theta=0.1, bw.adjust=3, n=10000, eps=1e-10)
 
 ```
+
+## New BG correction
+
+```{r new bg correction}
+
+
+estimate_noise_kde <- function(x, bg, bw, n) {
+  xmin <- min(x)
+  xmax <- max(x)
+
+  d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
+  dbg <- density(x[bg], bw=bw, from=xmin, to=xmax, n=n)
+  deps <- min(d$y[d$y > 0])
+  dbgeps <- min(dbg$y[dbg$y > 0])
+  lr <- (d$y + deps) / (dbg$y + dbgeps)
+  pbg <- 1 / (1 + lr)
+  pbgcdf <- cumsum(pbg)
+  noise <- xmin + (xmax - xmin) * pbgcdf / n
+  y <- approx(d$x, noise, xout=x)$y
+  return(list(nx=d$x, ny=noise, y=y))
+}
+
+
+bg <- ds$meta$bg
+x <- log2(cpm(ds$counts))
+n <- 10000
+
+#x1 <- unlist(x[, "s03_r030_fullroi"])
+#x1 <- unlist(x[, "s06_r044_fullroi"])
+x1 <- unlist(x[, "s04_r058_fullroi"])
+xmin <- min(x1)
+xmax <- max(x1)
+bw = bw.nrd(x1)
+bw.adjust=5
+weight <- 1
+
+d <- density(x1[!bg], adjust=bw.adjust, bw=bw, from=xmin, to=xmax, n=n)
+dbg <- density(x1[bg], adjust=bw.adjust, bw=bw, from=xmin, to=xmax, n=n)
+deps <- min(d$y[d$y > 0])
+dbgeps <- min(dbg$y[dbg$y > 0])
+lr <- (d$y + deps) / (dbg$y + dbgeps)
+pbg <- 2 / (1 + lr)
+pbgcdf <- cumsum(pbg)
+noise <- xmin + (xmax - xmin) * pbgcdf / n
+y1 <- approx(d$x, noise, xout=x1)$y
+
+
+tbl <- bind_cols(dx=d$x, dy=d$y, dbgx=dbg$x, dbgy=dbg$y, lr=lr,
+                 pbg=pbg, pbgcdf=pbgcdf, noise=noise)
+ggplot(tbl) +
+  geom_line(aes(dx, dy)) +
+  geom_line(aes(dbgx, dbgy), color="red") +
+  geom_line(aes(dx, 2* pbg), color="blue")
+
+ggplot(tbl) +
+  geom_line(aes(dx, noise))
+
+
+tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
+                 bind_cols(value = y1, bgcorrect="noise", bg=bg), 
+                 bind_cols(value = x1-y1, bgcorrect="after", bg=bg))
+
+ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
+  stat_density_ridges(alpha=0.5)
+
+
+tbl <- bind_cols(x1= x1, y1 = y1, bg= bg)
+ggplot(tbl) + 
+  geom_point(data=filter(tbl, bg), aes(x1, x1-y1), color="red") +
+  geom_line(data=filter(tbl, !bg), aes(x1, x1-y1), color="black") +
+#  geom_line(aes(x1, x1-y1), color="red") +
+  geom_hline(yintercept = mean((x1-y1)[bg]), color="red", linetype="dashed") +
+  geom_vline(xintercept = mean(x1[bg]), color="red", linetype="dashed")
+
+
+```
+
 
 
 ## Background correction
@@ -372,7 +335,7 @@ plot_bgsub <- function(s, m, x, cpm_quantile = 0.75) {
                      color=factor(bg),
                      shape=factor(keep_aoi))) +
     geom_point(size=1, alpha=0.5) +
-    scale_x_log10() +
+#    scale_x_log10() +
     scale_color_manual(values = pals::cols25()) +
     theme_minimal() +
     theme(axis.text.y = element_blank(),
@@ -389,8 +352,8 @@ plot_bgsub <- function(s, m, x, cpm_quantile = 0.75) {
   p2 <- ggplot(y, aes(x=qcpm_TRUE, y=qcpm_FALSE, color=keep_aoi)) +
     geom_point(alpha=0.6) +
     geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, color="black", linetype="dashed") +
-    scale_x_log10() +
-    scale_y_log10() +
+#    scale_x_log10() +
+#    scale_y_log10() +
     scale_color_manual(values = pals::cols25()) +
     theme_minimal() +
     labs(color="Keep AOI",
@@ -401,19 +364,21 @@ plot_bgsub <- function(s, m, x, cpm_quantile = 0.75) {
 
 
 
-x <- st_geomx_bgcorrect(ds$counts, ds$meta$bg, theta=0.25, bw.adjust=5, n=10000, eps=1e-20)
-
-apply(x, 2, function(x) { any(is.na(x))})
-
-p1 <- plot_bgsub(ds$samples, ds$meta, x, cpm_quantile=1)
-p1
-
+cpm_quantile <- 0.75
 
 # plot bg
-cpm_quantile <- 0.5
 x <- cpm(ds$counts)
 p1 <- plot_bgsub(ds$samples, ds$meta, x, cpm_quantile)
 p1
+
+
+# plot bg correct
+bg <- ds$meta$bg
+x <- log2(cpm(ds$counts))
+x <- st_geomx_bgcorrect(x, bg)
+p2 <- plot_bgsub(ds$samples, ds$meta, x, cpm_quantile)
+p2
+
 
 # background sub
 x <- cpm(bgsub(ds))
@@ -1402,5 +1367,190 @@ p
 
 
 
+
+```
+
+
+## Old BG Correction
+
+
+```{r bgcorrect}
+
+oldbgquants <- function(x, xbg, bw.adjust=3, n=10000, eps=1e-10) {
+  # quantiles of background signal corresponding to signal
+  xmin <- min(x)
+  xmax <- max(x)
+  d <- density(xbg, adjust=bw.adjust, from=xmin, to=xmax, n=n)
+  bgcdf <- d$y + eps
+  bgcdf <- cumsum(d$y) / sum(d$y)
+  q <- approx(d$x, bgcdf, xout=x)$y
+  #q <- approx(d$x, bgcdf, xout=x, rule=2)$y
+  return(q)
+}
+
+
+oldbglm <- function(xbg, theta) {
+  # linear model of background in quantile window [theta, 1-theta]
+  idx <- which(xbg >= quantile(xbg, theta) & xbg <= quantile(xbg, 1-theta))
+  xbgsubset <- xbg[idx]
+  ybgsubset <- (rank(xbg, ties.method="random")/length(xbg))[idx]
+  out <- lm(xbgsubset ~ ybgsubset)
+  b <- out$coefficients[1]
+  m <- out$coefficients[2]
+  
+  f <- function(quants) {
+    noise <- m * quants + b
+    return(noise)
+  }
+  return(f)
+}
+
+
+old_st_geomx_bgcorrect <- function(x, bg, theta=0.25, bw.adjust=3, n=10000, eps=1e-10, min.count=1) {
+
+  apply_bgcorrect <- function(x, bg) {
+    x <- log2(x)
+    qbg <- bgquants(x, x[bg], bw.adjust, n, eps)
+    noise_func <- bglm(x[bg], theta)
+    ybg <- noise_func(qbg)
+    return(2^(x) - 2^(ybg))
+    #return(x - ybg)
+  }  
+  
+  x <- apply(x, MARGIN=2, FUN=apply_bgcorrect)
+  x <- apply(x, 2, pmax, min.count)
+  return(x)
+}
+
+
+bg <- ds$meta$bg
+x <- cpm(ds$counts)
+x <- log2(x)
+xmin <- 0
+xmax <- max(x)
+eps <- 1e-6
+bw <- 1
+n <- 10000
+
+x1 <- unlist(x[, "s03_r030_fullroi"])
+#x1 <- unlist(x[, "s04_r058_fullroi"])
+x1bg <- x1[bg]
+x1min <- min(x1)
+x1max <- max(x1)
+
+d <- density(x1, bw=bw, from=x1min, to=x1max, n=n)
+dbg <- density(x1bg, bw=bw, from=x1min, to=x1max, n=n)
+lr <- d$y / dbg$y
+pbg <- 1 / (1 + lr)
+pbgcdf <- cumsum(pbg)
+noise <- x1min + (x1max - x1min) * pbgcdf / n
+
+y1 <- approx(d$x, noise, xout=x1)$y
+
+plot(x1, x1 - y1, cex=0.1, pch=19)
+
+tbl <- bind_cols(dx=d$x, dy=d$y, dbgx=dbg$x, dbgy=dbg$y, lr=lr, 
+                 pbg=pbg, pbgcdf=pbgcdf, noise=noise)
+ggplot(tbl) + 
+  geom_line(aes(dx, noise)) +
+  geom_hline(yintercept = median(x1bg), color="red", linetype="dashed")
+
+tbl <- bind_cols(x1=x1, y1=y1)
+ggplot(tbl) + 
+  geom_line(aes(x1,y1)) +
+  geom_line(aes(x1, x1-y1), color="red") +
+  geom_hline(yintercept = median(x1bg), color="red", linetype="dashed") +
+  geom_hline(yintercept = mean(x1bg), color="blue", linetype="dashed")
+
+
+
+range(x1bg)
+
+
+y <- approx(d$x, d$y, xout=x1)$y
+ybg <- approx(dbg$x, dbg$y, xout=x1)$y
+
+lr <- y / ybg
+pbg <- 1 / (1 + lr)
+cumsum(pbg)
+
+plot(x1, cumsum(pbg), xlim=c(0,1000))
+
+tbl <- bind_cols(dx=d$x, dy=d$y, dbgx=dbg$x, dbgy=dbg$y)
+ggplot(tbl) + 
+  geom_line(aes(dbgx, dbgy)) +
+  xlim(1, 1000)
+
+
+y <- approx(d$x, d$y, xout=x1)$y
+ybg <- approx(dbg$x, dbg$y, xout=x1)$y
+
+
+
+tbl <- bind_cols(dx = d$x, dy = d$y, dbgx=dbg$x, dbgy=dbg$y)
+ggplot(tbl) +
+  geom_line(aes(dx, dy)) +
+  geom_line(aes(dbgx, dbgy), color="red")
+
+
+
+dcdf <- cumsum(d$y + eps) / sum(d$y + eps)
+dbgcdf <- cumsum(dbg$y + eps) / sum(dbg$y + eps)
+
+y <- approx(d$x, dcdf, xout=x1)$y
+ybg <- approx(d$x, dbgcdf, xout=x1)$y
+
+y <- approx(d$x, dcdf, xout=10)$y
+ybg <- approx(d$x, dbgcdf, xout=10)$y
+
+
+noise <- x1 * (1-ybg) / (1-y)
+plot(x1, noise)
+plot(x1, (1 - ybg) / (1 - y))
+(1 - ybg) / (1 - y)
+(1 - ybg) / (1 - y)
+(1 - y) / (1 - ybg)
+
+
+tbl <- bind_cols(dx = d$x, dy = dcdf, dbgx=dbg$x, dbgy=dbgcdf)
+ggplot(tbl) +
+  geom_line(aes(dx, dy)) +
+  geom_line(aes(dbgx, dbgy), color="red")
+
+
+
+bgdensity <- density(x1bg, adjust=3, from=xmin, to=xmax, n=100000)
+bgcdf <- cumsum(bgdensity$y + eps) / sum(bgdensity$y + eps)
+bgq <- approx(bgdensity$x, bgcdf, xout=x1, rule=2)$y
+
+plot(density(bgq))
+plot(ecdf(bgdensity$y))
+
+y <- approx(bgcdf, bgdensity$x, xout=q)$y
+plot(bgcdf, bgdensity$x)
+plot(x1, y)
+plot(d$x, bgcdf, cex=0.5, pch=19)
+
+qbg <- bgquants(x1, x1[bg])
+noise_func <- bglm(x1[bg], theta=0.4)
+
+plot(x1, qbg)
+hist(x1[bg])
+max(x1[bg])
+x1[bg]
+quantile(x1[bg], 0.4)
+quantile(x1[bg], 0.6)
+plot(sort(x1[bg]))
+xbg <- x1[bg]
+theta <- 0.4
+
+ybg <- noise_func(qbg)
+
+plot(x1, ybg)
+summary(ybg)
+plot(x1, ybg)
+xnew <- (2^x1 - 2^ybg)
+xnew <- pmax(xnew, 1)
+x <- st_geomx_bgcorrect(ds, theta=0.1, bw.adjust=3, n=10000, eps=1e-10)
 
 ```

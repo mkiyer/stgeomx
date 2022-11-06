@@ -355,6 +355,29 @@ bgnorm <- function(ds) {
 
 
 #'
+#' background correction
+#'
+#' @param ds list dataset
+#' @returns matrix of background corrected log2(counts-per-million)
+#' @export
+st_geomx_bgcorrect <- function(ds, method="norm") {
+
+  apply_bgcorrect_norm <- function(x, bg) {
+    a <- sd(x[bg])^2 / sd(x[!bg])^2
+    c <- a * mean(x[!bg]) - mean(x[bg])
+    y <- (1-a)*x + c
+    return(y)
+  }
+
+  x <- log2(cpm(ds$counts))
+  bg <- ds$meta$bg
+  x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_norm, bg)
+  x <- apply(x, 2, pmax, 0)
+  return(x)
+}
+
+
+#'
 #' quantile normalization
 #'
 #' @param x matrix of numeric values
