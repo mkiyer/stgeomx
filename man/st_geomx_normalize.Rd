@@ -4,14 +4,14 @@
 \alias{st_geomx_normalize}
 \title{Normalization}
 \usage{
-st_geomx_normalize(ds, bgsub = TRUE, method = c("qn", "rle"))
+st_geomx_normalize(ds, bgcorrect = TRUE, method = c("qn", "rle", "cpm"))
 }
 \arguments{
-\item{bgsub}{bool perform background subtraction}
-
 \item{method}{string normalization method}
 
 \item{x}{matrix of counts}
+
+\item{bgsub}{bool perform background subtraction}
 }
 \value{
 matrix of normalized counts

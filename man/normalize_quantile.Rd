@@ -2,20 +2,16 @@
 % Please edit documentation in R/stgeomx.R
 \name{normalize_quantile}
 \alias{normalize_quantile}
-\title{subtract background noise from each sample}
+\title{quantile normalization}
 \usage{
 normalize_quantile(x)
 }
 \arguments{
-\item{x}{count matrix}
-
-\item{offset}{vector of bg noise levels per sample}
-
-\item{min.count}{minimum count threshold}
+\item{x}{matrix of numeric values}
 }
 \value{
-matrix of background-subtracted counts
+matrix of quantile normalized counts
 }
 \description{
-subtract background noise from each sample
+quantile normalization
 }

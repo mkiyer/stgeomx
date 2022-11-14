@@ -62,7 +62,7 @@ hpa_mel_prog_xlsx <- file.path(data_dir, "hpa_melanoma_prognostic.xlsx")
 # qc parameters
 geomx_negprobe_lod_quantile = 0.9
 geomx_min_counts = 1e6
-geomx_min_auc = 0.65
+geomx_min_auc = 0.70
 geomx_aoi_min_frac_expr = 0.2
 geomx_gene_min_frac_expr = 0.2
 
@@ -119,16 +119,17 @@ table(ds$meta$expressed)
 
 ```
 
-## QC plots: AOI filtering
+## QC: AOI filtering
 
 ```{r aoi filtering}
+
 p <- st_geomx_plot_aoi_filter(ds, geomx_min_counts, geomx_min_auc, geomx_aoi_min_frac_expr)
 p
 ggsave(file.path(plot_dir, "qc_aoi_filter.pdf"), p)
 
 ```
 
-## QC plots: gene filtering cutoff
+## QC: gene filtering cutoff
 
 ```{r plot gene fraction detectable above bg}
 
@@ -138,268 +139,8 @@ ggsave(file.path(plot_dir, "qc_gene_filtering_fpr_auc.pdf"), p)
 
 ```
 
-## Explore likelihood ratio transform
 
-```{r likelihood ratio explore}
-
-# 
-# x <- ds$counts[!ds$meta$bg, ]
-# xbg <- ds$counts[ds$meta$bg, ]
-# 
-# x1 <- log2(unlist(x[,1]))
-# xbg1 <- log2(unlist(xbg[,1]))
-# xmin <- min(c(x1, xbg1))
-# xmax <- max(c(x1, xbg1))
-# hist(x1, freq=FALSE, breaks=100, ylim=c(0, 1))
-# lines(density(x1, bw=0.2))
-# hist(xbg1, freq=FALSE, breaks=10, ylim=c(0, 2))
-# lines(density(xbg1, bw=0.2))
-# out <- density(x1, bw=0.2, from=xmin, to=xmax)
-# outbg <- density(xbg1, bw=0.2, from=xmin, to=xmax)
-# p <- 15
-# y <- approx(out$x, out$y, xout = p)$y
-# ybg <- approx(outbg$x, outbg$y, xout = p)$y
-# y / ybg
-# 
-
-```
-
-
-## BG correction using normal approximation
-
-```{r bg correction normal approximation}
-
-
-st_geomx_bgcorrect_norm <- function(x, bg) {
-
-  apply_bgcorrect <- function(x) {
-    a <- sd(x[bg])^2 / sd(x[!bg])^2
-    c <- a * mean(x[!bg]) - mean(x[bg])
-    y <- (1-a)*x + c
-    return(y)
-  }
-  x <- apply(x, MARGIN=2, FUN=apply_bgcorrect)
-  x <- apply(x, 2, pmax, 0)
-  return(x)
-}
-
-
-
-
-bg <- ds$meta$bg
-x <- log2(cpm(ds$counts))
-
-#x1 <- unlist(x[, "s03_r030_fullroi"])
-x1 <- unlist(x[, "s06_r044_fullroi"])
-#x1 <- unlist(x[, "s04_r058_fullroi"])
-
-bgvar <- sd(x1[bg])^2
-bgmean <- mean(x1[bg])
-x1var <- sd(x1)^2
-x1mean <- mean(x1)
-
-a <- bgvar / x1var
-m <- 1 - a
-c <- a * x1mean - bgmean
-
-y1 <- m*x1 + c
-
-
-
-tbl <- bind_cols(dx=d$x, dy=d$y, dbgx=dbg$x, dbgy=dbg$y, lr=lr,
-                 pbg=pbg, pbgcdf=pbgcdf, noise=noise)
-ggplot(tbl) +
-  geom_line(aes(dx, dy)) +
-  geom_line(aes(dbgx, dbgy), color="red") +
-  geom_line(aes(dx, 2* pbg), color="blue")
-
-ggplot(tbl) +
-  geom_line(aes(dx, noise))
-
-
-tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
-                 bind_cols(value = y1, bgcorrect="after", bg=bg), 
-                 bind_cols(value = x1-y1, bgcorrect="noise", bg=bg))
-
-ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
-  stat_density_ridges(alpha=0.5)
-
-
-tbl <- bind_cols(x1= x1, y1 = y1, bg= bg)
-ggplot(tbl) + 
-  geom_point(data=filter(tbl, bg), aes(x1, x1-y1), color="red") +
-  geom_line(data=filter(tbl, !bg), aes(x1, x1-y1), color="black") +
-#  geom_line(aes(x1, x1-y1), color="red") +
-  geom_hline(yintercept = mean((x1-y1)[bg]), color="red", linetype="dashed") +
-  geom_vline(xintercept = mean(x1[bg]), color="red", linetype="dashed")
-
-
-```
-
-## New BG correction
-
-```{r new bg correction}
-
-
-estimate_noise_kde <- function(x, bg, bw, n) {
-  xmin <- min(x)
-  xmax <- max(x)
-
-  d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
-  dbg <- density(x[bg], bw=bw, from=xmin, to=xmax, n=n)
-  deps <- min(d$y[d$y > 0])
-  dbgeps <- min(dbg$y[dbg$y > 0])
-  lr <- (d$y + deps) / (dbg$y + dbgeps)
-  pbg <- 1 / (1 + lr)
-  pbgcdf <- cumsum(pbg)
-  noise <- xmin + (xmax - xmin) * pbgcdf / n
-  y <- approx(d$x, noise, xout=x)$y
-  return(list(nx=d$x, ny=noise, y=y))
-}
-
-
-bg <- ds$meta$bg
-x <- log2(cpm(ds$counts))
-n <- 10000
-
-#x1 <- unlist(x[, "s03_r030_fullroi"])
-#x1 <- unlist(x[, "s06_r044_fullroi"])
-x1 <- unlist(x[, "s04_r058_fullroi"])
-xmin <- min(x1)
-xmax <- max(x1)
-bw = bw.nrd(x1)
-bw.adjust=5
-weight <- 1
-
-d <- density(x1[!bg], adjust=bw.adjust, bw=bw, from=xmin, to=xmax, n=n)
-dbg <- density(x1[bg], adjust=bw.adjust, bw=bw, from=xmin, to=xmax, n=n)
-deps <- min(d$y[d$y > 0])
-dbgeps <- min(dbg$y[dbg$y > 0])
-lr <- (d$y + deps) / (dbg$y + dbgeps)
-pbg <- 2 / (1 + lr)
-pbgcdf <- cumsum(pbg)
-noise <- xmin + (xmax - xmin) * pbgcdf / n
-y1 <- approx(d$x, noise, xout=x1)$y
-
-
-tbl <- bind_cols(dx=d$x, dy=d$y, dbgx=dbg$x, dbgy=dbg$y, lr=lr,
-                 pbg=pbg, pbgcdf=pbgcdf, noise=noise)
-ggplot(tbl) +
-  geom_line(aes(dx, dy)) +
-  geom_line(aes(dbgx, dbgy), color="red") +
-  geom_line(aes(dx, 2* pbg), color="blue")
-
-ggplot(tbl) +
-  geom_line(aes(dx, noise))
-
-
-tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
-                 bind_cols(value = y1, bgcorrect="noise", bg=bg), 
-                 bind_cols(value = x1-y1, bgcorrect="after", bg=bg))
-
-ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
-  stat_density_ridges(alpha=0.5)
-
-
-tbl <- bind_cols(x1= x1, y1 = y1, bg= bg)
-ggplot(tbl) + 
-  geom_point(data=filter(tbl, bg), aes(x1, x1-y1), color="red") +
-  geom_line(data=filter(tbl, !bg), aes(x1, x1-y1), color="black") +
-#  geom_line(aes(x1, x1-y1), color="red") +
-  geom_hline(yintercept = mean((x1-y1)[bg]), color="red", linetype="dashed") +
-  geom_vline(xintercept = mean(x1[bg]), color="red", linetype="dashed")
-
-
-```
-
-
-
-## Background correction
-
-```{r}
-
-plot_bgsub <- function(s, m, x, cpm_quantile = 0.75) {
-  s <- select(s, aoi, slide, keep)
-  y <- bind_cols(m, x)
-  y <- y %>%
-    pivot_longer(colnames(x), names_to="aoi", values_to="count") %>%
-    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi")) %>%
-    group_by(aoi, bg) %>%
-    summarise(keep_aoi = first(keep_aoi),
-              slide = first(slide),
-              qcpm = stats::quantile(count, cpm_quantile),
-              gmcpm = geomean(count))
-
-  p1 <- ggplot(y, aes(x=qcpm,
-                     y=reorder(factor(aoi), qcpm),
-                     color=factor(bg),
-                     shape=factor(keep_aoi))) +
-    geom_point(size=1, alpha=0.5) +
-#    scale_x_log10() +
-    scale_color_manual(values = pals::cols25()) +
-    theme_minimal() +
-    theme(axis.text.y = element_blank(),
-          panel.grid.major.y = element_blank(),
-          panel.grid.minor.y = element_blank()) +
-    labs(color = "BG", shape = "Keep AOI", x="CPM", y="AOI",
-         title=paste0("BG vs Signal CPM Quantile = ", cpm_quantile))
-  
-  y <- y %>%
-    pivot_wider(names_from="bg", values_from=c("gmcpm", "qcpm"))
-
-  bg_gene_cor <- cor.test(y$qcpm_TRUE, y$qcpm_FALSE)$estimate
-  label_cor <- sprintf("Correlation r = %.2f", bg_gene_cor)
-  p2 <- ggplot(y, aes(x=qcpm_TRUE, y=qcpm_FALSE, color=keep_aoi)) +
-    geom_point(alpha=0.6) +
-    geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, color="black", linetype="dashed") +
-#    scale_x_log10() +
-#    scale_y_log10() +
-    scale_color_manual(values = pals::cols25()) +
-    theme_minimal() +
-    labs(color="Keep AOI",
-         x="bg cpm", y="gene cpm",
-         subtitle=label_cor)
-  return(p1 + p2)
-}
-
-
-
-cpm_quantile <- 0.75
-
-# plot bg
-x <- cpm(ds$counts)
-p1 <- plot_bgsub(ds$samples, ds$meta, x, cpm_quantile)
-p1
-
-
-# plot bg correct
-bg <- ds$meta$bg
-x <- log2(cpm(ds$counts))
-x <- st_geomx_bgcorrect(x, bg)
-p2 <- plot_bgsub(ds$samples, ds$meta, x, cpm_quantile)
-p2
-
-
-# background sub
-x <- cpm(bgsub(ds))
-p2 <- plot_bgsub(ds$samples, ds$meta, x, cpm_quantile)
-p2
-
-# bgsub
-x <- cpm(background_subtract(ds$counts, ds$samples$bg_geomean))
-p3 <- plot_bgsub(ds$samples, ds$meta, x, cpm_quantile)
-p3
-
-
-p <- p1 / p3
-p
-f <- file.path(plot_dir, "qc_aoi_qc_bgsub.pdf")
-ggsave(f, plot=p, device="pdf")
-
-
-```
-
-## Examine technical replicates
+## QC: Examine technical replicates
 
 ```{r technical replicates}
 
@@ -510,6 +251,37 @@ save_pheatmap_pdf(p, filename=f, width=8, height=8)
 
 ```
 
+## QC: Background correction
+
+```{r background correction}
+
+x <- cpm(ds$counts)
+p <- st_geomx_plot_bgcorrect(ds, x)
+p
+f <- file.path(plot_dir, "qc_bgcorrect_none.pdf")
+ggsave(f, plot=p, device="pdf", width=8, height=12)
+
+p <- st_geomx_plot_bgcorrect_density(ds, x)
+p
+f <- file.path(plot_dir, "qc_bgcorrect_none_density.pdf")
+ggsave(f, plot=p, device="pdf", width=8, height=12)
+
+x <- cpm(st_geomx_bgcorrect(ds, method="norm"))
+p <- st_geomx_plot_bgcorrect(ds, x)
+p
+f <- file.path(plot_dir, "qc_bgcorrect_norm.pdf")
+ggsave(f, plot=p, device="pdf", width=8, height=12)
+
+p <- st_geomx_plot_bgcorrect_density(ds, x)
+p
+f <- file.path(plot_dir, "qc_bgcorrect_norm_density.pdf")
+ggsave(f, plot=p, device="pdf", width=8, height=12)
+
+
+```
+
+
+
 ## Apply filters and normalize
 
 Consolidate technical replicates. When sample has replicates, choose replicate with greater signal-to-noise ratio
@@ -530,84 +302,18 @@ fds <- list(samples = s,
 fds <- st_geomx_filter(fds)
 
 # normalize
-#bgnorm_cpm <- bgnorm(fds)
-#bgnorm_qn_cpm <- normalize_quantile(bgnorm_cpm)
-bgsub_qn_cpm <- st_geomx_normalize(fds, bgsub=TRUE, method="qn")
-bgsub_rle_cpm <- st_geomx_normalize(fds, bgsub=TRUE, method="rle")
-
-#rownames(bgnorm_cpm) <- fds$meta$gene
-#rownames(bgnorm_qn_cpm) <- fds$meta$gene
-rownames(bgsub_qn_cpm) <- fds$meta$gene
-rownames(bgsub_rle_cpm) <- fds$meta$gene
-
-# try a different method
-# y <- background_subtract(fds$counts, fds$samples$bg_geomean)
-# y <- DGEList(counts = y, samples=fds$samples, genes=fds$meta)
-# y <- calcNormFactors(y, method="TMM")
-# v <- voom(y, plot=TRUE)
+y_bg_rle <- st_geomx_normalize(fds, bgcorrect=TRUE, method="rle")
+y_bg_qn <- st_geomx_normalize(fds, bgcorrect=TRUE, method="qn")
+y_bg_cpm <- st_geomx_normalize(fds, bgcorrect=TRUE, method="cpm")
+y_rle <- st_geomx_normalize(fds, bgcorrect=FALSE, method="rle")
+y_qn <- st_geomx_normalize(fds, bgcorrect=FALSE, method="qn")
+y_cpm <- st_geomx_normalize(fds, bgcorrect=FALSE, method="cpm")
 
 # choose normalized data to work with
-normcounts <- bgsub_rle_cpm
-#normcounts <- bgsub_qn_cpm
-#normcounts <- bgnorm_qn_cpm
-#normcounts <- bgnorm_cpm
-
+normcounts <- y_bg_qn
 
 ```
 
-
-
-## Raw count distributions
-
-```{r raw count distributions}
-
-# sample annotations to use in plots
-s <- select(ds$samples, aoi, slide, keep, acral, sample_type, os_quartile, vital_status)
-x <- bind_cols(ds$meta, ds$counts)
-x <- x %>%
-  pivot_longer(s$aoi, names_to="aoi", values_to="count") %>%
-  inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
-
-p <- x %>%
-  ggplot(aes(x=count, y=reorder(factor(aoi), count), fill=factor(bg))) +
-  stat_density_ridges(color="#ffffff00", alpha=0.4, scale=20, rel_min_height=0.001, quantile_lines=FALSE) + 
-  scale_x_continuous(trans="log10") +
-  scale_fill_manual(values = pals::cols25()) +
-  theme_ridges() + 
-  theme(axis.text.y = element_blank()) + 
-  labs(x="raw counts", y="AOIs", fill="bg") +
-#  theme(axis.text = element_text(size=5)) + 
-  facet_grid(slide ~ ., scales="free_y")
-p
-ggsave(file.path(plot_dir, "qc_ridge_raw_aoi.pdf"), p, width = 8, height = 8)
-
-# p <- x %>%
-#   ggplot(aes(x=count, y=reorder(factor(aoi), count), fill=factor(keep_aoi))) +
-#   stat_density_ridges(color="#ffffff00", alpha=0.4, scale=20, rel_min_height=0.001, quantile_lines=FALSE) + 
-#   scale_x_continuous(trans="log10") +
-#   scale_fill_manual(values = pals::cols25()) +
-#   theme_ridges() + 
-#   theme(axis.text.y = element_blank()) + 
-#   labs(x="raw counts", y="AOIs", fill="Keep AOI") +
-# #  theme(axis.text = element_text(size=5)) + 
-#   facet_grid(slide ~ ., scales="free_y")
-# p
-# ggsave(file.path(plot_dir, "qc_ridge_raw_aoi_keep.pdf"), p, width = 8, height = 8)
-# 
-# p <- x %>%
-#   ggplot(aes(x=count, y=reorder(factor(slide), count), fill=factor(bg))) +
-#   stat_density_ridges(alpha=0.5, scale=10, rel_min_height=0.001, quantile_lines=TRUE) + 
-#   scale_x_continuous(trans="log10") +
-#   scale_fill_manual(values = pals::cols25()) +
-#   theme_ridges() + 
-#   theme(axis.text.y = element_blank()) + 
-#   labs(x="raw counts", y="Slides", fill="bg") +
-# #  theme(axis.text = element_text(size=5)) + 
-#   facet_grid(slide ~ ., scales="free_y")
-# p
-# ggsave(file.path(plot_dir, "qc_ridge_raw_slide.pdf"), p, width = 8, height = 8)
-
-```
 
 
 ## QC plot: normalization
@@ -705,7 +411,7 @@ run_pca <- function(x) {
 }
 
 y <- log2(normcounts)
-y <- most_cv_genes(y, 2000)
+y <- most_cv_genes(y, 5000)
 
 pca_res <- run_pca(y)
 pca_tbl <- bind_cols(fds$samples, as_tibble(pca_res$pca$x))
@@ -721,17 +427,9 @@ p1 <- p + geom_point(aes(color=bg_auc), alpha = 0.8, size=2) +
 p1
 ggsave(file.path(plot_dir, "pca_bg_auc.pdf"), plot=p1, device="pdf")
 
-p1 <- p + geom_point(aes(color=frac_expr), alpha = 0.8, size=2) +
-  scale_color_viridis_c()
-p1
-p1 <- p + geom_point(aes(color=slide), alpha = 0.8, size=2) +
-  scale_color_manual(values=pals::cols25())
-p1
-
-
 # biological factors
-p1 <- p + geom_point(aes(color=factor(patient)), alpha = 0.8, size=2)
-p1
+#p1 <- p + geom_point(aes(color=factor(patient)), alpha = 0.8, size=2)
+#p1
 p1 <- p + geom_point(aes(color=factor(acral)), alpha = 0.8, size=2) +
   scale_color_manual(values=pals::cols25())
 p1
@@ -749,11 +447,11 @@ ggsave(file.path(plot_dir, "pca_os_quartile.pdf"), plot=p1, device="pdf")
 
 # investigate contributions to pca
 res.pca <- prcomp(y, scale = TRUE)
-p <- fviz_pca_ind(res.pca, select.ind=list(contrib=50), repel=TRUE, max.overlaps=Inf)
+p <- fviz_pca_ind(res.pca, select.ind=list(contrib=20), repel=TRUE, ggrepel.max.overlaps=Inf)
 p
 ggsave(file.path(plot_dir, "pca_ind.pdf"), p)
 
-p <- fviz_contrib(res.pca, choice = "ind", axes = 1, top=20)
+p <- fviz_contrib(res.pca, choice = "ind", axes = 1, top=20, max.overlaps=Inf)
 p
 ggsave(file.path(plot_dir, "pca_contrib.pdf"), p)
 
@@ -775,17 +473,10 @@ p <- ggplot(umap_df, aes(x=umap1, y=umap2)) +
 p1 <- p + geom_point(aes(color=bg_auc), alpha = 0.8, size=2) +
   scale_color_viridis_c()
 p1
-p1 <- p + geom_point(aes(color=frac_expr), alpha = 0.8, size=2) +
-  scale_color_viridis_c()
-p1
-p1 <- p + geom_point(aes(color=slide), alpha = 0.8, size=2) +
-  scale_color_manual(values=pals::cols25())
-p1
-
 
 # biological factors
-p1 <- p + geom_point(aes(color=factor(patient)), alpha = 0.8, size=2)
-p1
+#p1 <- p + geom_point(aes(color=factor(patient)), alpha = 0.8, size=2)
+#p1
 p1 <- p + geom_point(aes(color=factor(acral)), alpha = 0.8, size=2) +
   scale_color_manual(values=pals::cols25())
 p1
@@ -885,6 +576,10 @@ process_limma <- function(fit, contrasts, method,
 
 
 plot_de_volcano <- function(res) {
+  # res <- res %>% 
+  #   mutate(de = case_when(padj > 0.05 ~ "no",
+  #                         log2fc < 0 ~ "dn",
+  #                         log2fc > 0 ~ "up"))
   p <- ggplot(res, aes(x=log2fc, y=-log10(padj), color=de, size=de)) +
     geom_point(alpha=0.7) +
     geom_text_repel(data=subset(res, de != "no"), color="black", size=3, aes(label=gene), max.overlaps=Inf) +
@@ -901,16 +596,22 @@ plot_de_volcano <- function(res) {
 ```
 
 
-## DE analysis
+## DE analysis across different patients
 
-```{r de analysis}
+```{r between patient de analysis}
 
-# setup de analysis
-s <- fds$samples
-y <- log2(normcounts)
+# assemble cohort of in-transit disease with one sample per patient
+s <- fds$samples %>%
+  filter(sample_type == "it") %>%
+  group_by(patient) %>%
+  arrange(sample_type) %>%
+  slice_head(n=1) %>%
+  ungroup()
+y <- log2(normcounts)[,s$aoi]
+
+# de analysis
 de <- NULL
 method <- "limma_trend"
-
 
 # acral
 s$acral <- factor(s$acral, levels=c(0, 1))
@@ -1367,6 +1068,171 @@ p
 
 
 
+
+```
+
+
+## Density approx BG correction
+
+```{r bg correction using kernel density}
+
+bg <- ds$meta$bg
+x <- ds$counts
+
+bw.adjust = 1
+sort(ds$samples$bg_auc)[1:10]
+sort(ds$samples$bg_auc, decreasing=TRUE)[1:10]
+s <- "s06_r059_fullroi"
+x1 <- unlist(x[,s])
+
+
+ks.test(x=sample(x1, size=sum(bg), replace=FALSE), y=x1[bg], alternative="less")
+
+res <- bgcorrect_kde(x1, bg, bw.adjust=bw.adjust)
+reskde <- pmax(1, res$y)
+resnorm <- pmax(1, bgcorrect_norm(x1, bg))
+resbgsub <- pmax(1, x1 - geomean(x1[bg]))
+
+summary(res$y)
+summary(resnorm)
+
+range(res$y)
+range(resnorm)
+range(resbgsub)
+
+tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
+                 bind_cols(value = reskde, bgcorrect="kde", bg=bg),
+                 bind_cols(value = resnorm, bgcorrect="norm", bg=bg),
+                 bind_cols(value = resbgsub, bgcorrect="bgsub", bg=bg))
+ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
+  stat_density_ridges(alpha=0.5, bandwidth=res$bw) +
+  scale_fill_manual(values = pals::cols25()) + 
+  scale_x_log10()
+
+tbl <- bind_cols(dx=res$dx, 
+                 dy=res$dy, 
+                 dy2=res$dy2,
+                 dbg=res$dbg, 
+                 lr=res$lr)
+ggplot(tbl) +
+  geom_line(aes(dx, dy)) +
+  geom_line(aes(dx, dbg), color="red") +
+  geom_line(aes(dx, lr), color="blue")
+
+ggplot(tbl) +
+  geom_line(aes(dx, -log10(dy+res$eps))) +
+  geom_line(aes(dx, -log10(dbg+res$epsbg)), color="red") +
+  geom_line(aes(dx, -log10(lr)), color="blue")
+
+tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
+                 bind_cols(value = res$y, bgcorrect="after", bg=bg))
+
+ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
+  stat_density_ridges(alpha=0.5, bandwidth=res$bw) +
+  scale_fill_manual(values = pals::cols25()) + 
+  scale_x_log10()
+
+
+tbl <- bind_cols(x1=x1, y1=resnorm, bg=bg)
+ggplot(tbl) + 
+  geom_point(data=filter(tbl, bg), aes(x1, y1), size=3, alpha=0.7, color="red") +
+  geom_line(data=filter(tbl, !bg), aes(x1, y1), color="black") +
+  geom_hline(yintercept = mean(tbl$y1[bg]), color="red", linetype="dashed") +
+  geom_vline(xintercept = mean(tbl$x1[bg]), color="red", linetype="dashed") + 
+  scale_x_log10() + 
+  scale_y_log10()
+
+```
+
+
+
+## Explore likelihood ratio transform
+
+```{r likelihood ratio explore}
+
+# 
+# x <- ds$counts[!ds$meta$bg, ]
+# xbg <- ds$counts[ds$meta$bg, ]
+# 
+# x1 <- log2(unlist(x[,1]))
+# xbg1 <- log2(unlist(xbg[,1]))
+# xmin <- min(c(x1, xbg1))
+# xmax <- max(c(x1, xbg1))
+# hist(x1, freq=FALSE, breaks=100, ylim=c(0, 1))
+# lines(density(x1, bw=0.2))
+# hist(xbg1, freq=FALSE, breaks=10, ylim=c(0, 2))
+# lines(density(xbg1, bw=0.2))
+# out <- density(x1, bw=0.2, from=xmin, to=xmax)
+# outbg <- density(xbg1, bw=0.2, from=xmin, to=xmax)
+# p <- 15
+# y <- approx(out$x, out$y, xout = p)$y
+# ybg <- approx(outbg$x, outbg$y, xout = p)$y
+# y / ybg
+# 
+```
+
+
+```{r test bg correction}
+
+x <- st_geomx_bgcorrect(ds, method="kde")
+
+
+bg <- ds$meta$bg
+#s <- "s03_r030_fullroi"
+s <- "s04_r058_fullroi"
+x1 <- unlist(ds$counts[, s])
+y1 <- unlist(x[, s])
+
+range(x1)
+range(y1)
+range(x1[bg])
+tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
+                 bind_cols(value = y1, bgcorrect="after", bg=bg),
+                 bind_cols(value = x1-y1, bgcorrect="noise", bg=bg))
+
+ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
+  stat_density_ridges(alpha=0.5) +
+  scale_x_log10()
+
+
+
+# bg <- ds$meta$bg
+x <- log2(ds$counts)
+#x1 <- unlist(x[, "s03_r030_fullroi"])
+x1 <- unlist(x[, "s06_r044_fullroi"])
+#x1 <- unlist(x[, "s04_r058_fullroi"])
+
+bgvar <- sd(x1[bg])^2
+bgmean <- mean(x1[bg])
+x1var <- sd(x1)^2
+x1mean <- mean(x1)
+
+a <- bgvar / x1var
+m <- 1 - a
+c <- a * x1mean - bgmean
+
+y1 <- m*x1 + c
+y1 <- pmax(y1, 0)
+y1 <- 2^y1
+
+
+tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
+                 bind_cols(value = y1, bgcorrect="after", bg=bg),
+                 bind_cols(value = x1-y1, bgcorrect="noise", bg=bg))
+
+ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
+  stat_density_ridges(alpha=0.5) +
+  scale_x_log10()
+
+tbl <- bind_cols(x1= x1, y1 = y1, bg= bg)
+ggplot(tbl) +
+  geom_point(data=filter(tbl, bg), aes(x1, y1), color="red") +
+  geom_line(data=filter(tbl, !bg), aes(x1, y1), color="black") +
+#  geom_line(aes(x1, x1-y1), color="red") +
+  geom_hline(yintercept = mean(y1[bg]), color="red", linetype="dashed") +
+  geom_vline(xintercept = mean(x1[bg]), color="red", linetype="dashed") +
+  scale_x_log10() +
+  scale_y_log10()
 
 ```
 

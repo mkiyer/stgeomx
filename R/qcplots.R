@@ -115,64 +115,6 @@ st_geomx_plot_gene_filter <- function(ds, min_frac_expr=0) {
 }
 
 
-#' compare median gene to bg cpm
-#'
-#' @param x list dataset
-#' @returns ggplot object
-dotplot_aoi_bg_vs_signal <- function(x, cpm_quantile = 0.75) {
-  y <- x %>%
-    group_by(aoi, bg) %>%
-    summarise(keep_aoi = first(keep_aoi),
-              slide = first(slide),
-              qcpm = stats::quantile(count, cpm_quantile),
-              gmcpm = geomean(count))
-
-  p <- ggplot(y, aes(x=qcpm,
-                     y=reorder(factor(aoi), qcpm),
-                     color=factor(bg),
-                     shape=factor(keep_aoi))) +
-    geom_point(size=1, alpha=0.5) +
-    scale_color_manual(values = pals::cols25()) +
-    theme_minimal() +
-    theme(axis.text.y = element_blank(),
-          panel.grid.major.y = element_blank(),
-          panel.grid.minor.y = element_blank()) +
-    labs(color = "BG", shape = "Keep AOI", x="Median CPM", y="AOI",
-         title=paste0("BG vs Signal CPM Quantile = ", cpm_quantile))
-  return(p)
-}
-
-#'
-#' scatter plot signal vs bg
-#'
-#' @param x list dataset
-#' @returns ggplot object
-scatter_aoi_bg_vs_signal <- function(x, cpm_quantile = 0.75) {
-  y <- x %>%
-    group_by(aoi, bg) %>%
-    summarise(keep_aoi = first(keep_aoi),
-              slide = first(slide),
-              qcpm = stats::quantile(count, cpm_quantile),
-              gmcpm = geomean(count)) %>%
-    pivot_wider(names_from="bg", values_from=c("gmcpm", "qcpm"))
-
-  bg_gene_cor <- cor.test(y$qcpm_TRUE, y$qcpm_FALSE)$estimate
-  label_cor <- sprintf("Correlation r = %.2f", bg_gene_cor)
-  p <- ggplot(y, aes(x=qcpm_TRUE, y=qcpm_FALSE, color=keep_aoi)) +
-    geom_point(alpha=0.6) +
-    geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, color="black", linetype="dashed") +
-    scale_x_log10() +
-    scale_y_log10() +
-    scale_color_manual(values = pals::cols25()) +
-    theme_minimal() +
-    labs(color="Keep AOI",
-         x="CPM background", y="CPM genes",
-         title=paste0("BG vs Gene CPM quantile = ", cpm_quantile),
-         subtitle=label_cor)
-  return(p)
-}
-
-
 #'
 #' qc plots to assess the effect of background subtraction
 #'
@@ -180,64 +122,85 @@ scatter_aoi_bg_vs_signal <- function(x, cpm_quantile = 0.75) {
 #' @import patchwork
 #'
 #' @param list dataset
+#' @param tibble x expr matrix
 #' @returns ggplot object
 #' @export
-st_geomx_plot_bgsub <- function(ds, cpm_quantile) {
-  # sample annotations to use in plots
-  s <- select(ds$samples, aoi, slide, keep)
+st_geomx_plot_bgcorrect <- function(ds, x) {
+  s <- ds$samples
+  m <- ds$meta
 
-  # compute cpm (before background subtract), bind to meta, join to annot
-  x <- cpm(ds$counts)
-  x <- bind_cols(ds$meta, x)
-  x <- x %>%
-    pivot_longer(colnames(ds$counts), names_to="aoi", values_to="count") %>%
-    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
-  dotplot1 <- dotplot_aoi_bg_vs_signal(x)
-  scatter1 <- scatter_aoi_bg_vs_signal(x, cpm_quantile)
+  s <- select(s, aoi, slide, keep)
+  y <- bind_cols(m, x)
+  y <- y %>%
+    pivot_longer(colnames(x), names_to="aoi", values_to="count") %>%
+    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi")) %>%
+    group_by(aoi, bg) %>%
+    summarise(keep_aoi = first(keep_aoi),
+              slide = first(slide),
+              gmcpm = geomean(count))
 
-  # background subtraction, bind meta, join sample annotation
-  x <- background_subtract(ds$counts, ds$samples$bg_geomean)
-  x <- cpm(x)
-  x <- bind_cols(ds$meta, x)
-  x <- x %>%
-    pivot_longer(colnames(ds$counts), names_to="aoi", values_to="count") %>%
-    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
-  dotplot2 <- dotplot_aoi_bg_vs_signal(x)
-  scatter2 <- scatter_aoi_bg_vs_signal(x, cpm_quantile)
+  p1 <- ggplot(y, aes(x=gmcpm,
+                      y=reorder(factor(aoi), gmcpm),
+                      color=factor(bg))) +
+    geom_point(size=1, alpha=0.5) +
+    scale_x_log10() +
+    scale_color_manual(values = pals::cols25()) +
+    theme_minimal() +
+    theme(axis.text.y = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank()) +
+    labs(color = "BG", x="CPM", y="AOI") +
+    facet_wrap(~ keep_aoi)
 
-  p <- (dotplot1 | scatter1) / (dotplot2 | scatter2)
-  return(p)
+  y <- y %>%
+    pivot_wider(names_from="bg", values_from="gmcpm", names_prefix="bg_")
+  ykeep <- filter(y, keep_aoi)
+  bg_gene_cor <- cor.test(ykeep$bg_TRUE, ykeep$bg_FALSE)$estimate
+  label_cor <- sprintf("Correlation r = %.2f", bg_gene_cor)
+  p2 <- ggplot(y, aes(x=bg_TRUE, y=bg_FALSE, color=keep_aoi)) +
+    geom_point(alpha=0.6) +
+    geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, color="black", linetype="dashed") +
+    scale_x_log10() +
+    scale_y_log10() +
+    scale_color_manual(values = pals::cols25()) +
+    theme_minimal() +
+    labs(color="Keep AOI",
+         x="bg cpm", y="gene cpm",
+         subtitle=label_cor) +
+    facet_wrap(~ keep_aoi)
+  return(p1 / p2)
 }
 
 
 #'
-#' qc plots to assess the effect of background subtraction
+#' qc plots to compare count densities
 #'
 #' @import ggplot2
 #'
 #' @param list dataset
+#' @param tibble x expr matrix
 #' @param aes_y string
 #' @param aes_fill string
 #' @returns ggplot object
 #' @export
-st_geomx_plot_count_distribution <- function(ds, aes_y, aes_fill, ridge_scale=5) {
-  s <- select(ds$samples, aoi, slide, keep, {{ aes_y }}, {{ aes_fill }})
-  x <- bind_cols(ds$meta, cpm(ds$counts))
-  x <- x %>%
-    pivot_longer(colnames(ds$counts), names_to="aoi", values_to="count") %>%
-    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
+st_geomx_plot_bgcorrect_density <- function(ds, x) {
 
-  # ridge plot showing variability in background noise
-  p <- ggplot(x, aes(x=count, y=reorder({{ aes_y }}, count), fill={{ aes_fill }})) +
-    stat_density_ridges(color="#00000066", alpha=0.4, scale=ridge_scale, rel_min_height=0.001, quantile_lines=TRUE) +
-    scale_x_log10() +
+  s <- select(ds$samples, aoi, slide, keep)
+  x <- bind_cols(ds$meta, x)
+  x <- x %>%
+    pivot_longer(s$aoi, names_to="aoi", values_to="value") %>%
+    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
+  colnames(x)
+
+  p <- ggplot(x, aes(x=value, y=reorder(factor(aoi), value), fill=factor(bg))) +
+    stat_density_ridges(color="#ffffff00", alpha=0.4, scale=20,
+                        rel_min_height=0.001, quantile_lines=FALSE) +
+    scale_x_continuous(trans="log10") +
     scale_fill_manual(values = pals::cols25()) +
-    xlab("Count") +
-    ylab("AOIs") +
-    labs(fill = "Slide") +
     theme_ridges() +
-    theme(axis.text.y = element_blank())
-    #facet_grid(slide ~ ., scales="free_y")
+    theme(axis.text.y = element_blank()) +
+    labs(x="Value", y="AOI", fill="BG") +
+    facet_wrap(~ keep_aoi, scales="free_y", ncol=1)
   return(p)
 }
 

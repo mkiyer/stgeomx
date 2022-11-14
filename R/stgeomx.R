@@ -88,6 +88,30 @@ geomean <- function(x) {
 }
 
 
+calc_ks_stats <- function(x, bg, iter=10) {
+  # KS test of gene vs background
+  ks_dist <- NULL
+  ks_pval <- NULL
+  bg.length <- sum(bg)
+  for (i in 1:ncol(x)) {
+    print(i)
+    xi <- unlist(x[!bg, i])
+    xibg <- unlist(x[bg, i])
+
+    d <- NULL
+    p <- NULL
+    for (j in 1:iter) {
+      xj <- sample(xi, size=bg.length)
+      res <- suppressWarnings(stats::ks.test(xj, xibg, alternative="less"))
+      d[j] <- res$statistic
+      p[j] <- res$p.value
+    }
+    ks_dist[i] <- median(d[j])
+    ks_pval[i] <- median(p[j])
+  }
+  return(list(ks_dist=ks_dist, ks_pval=ks_pval))
+}
+
 #'
 #' Compute qc metrics
 #'
@@ -108,8 +132,23 @@ calc_bg_stats <- function(meta, counts, bg_lod_quantile) {
     summarize(across(-bg, ~ proc_auc(bg, .x))) %>%
     unlist()
 
+  # KS test of gene vs background
+  # ks_stats <- calc_ks_stats(counts, meta$bg)
+  ks_dist <- NULL
+  ks_pval <- NULL
+  bg <- meta$bg
+  for (i in 1:ncol(counts)) {
+    x <- unlist(counts[!bg, i])
+    xbg <- unlist(counts[bg, i])
+    res <- suppressWarnings(stats::ks.test(x, xbg, alternative="less"))
+    ks_dist[i] <- res$statistic
+    ks_pval[i] <- res$p.value
+  }
+
   x <- counts[meta$bg, ]
   y <- bind_cols(
+    bg_ks_dist = ks_dist,
+    bg_ks_pval = ks_pval,
     bg_auc = bg_auc,
     bg_counts = colSums(x),
     bg_cpm = 1e6 * colSums(x) / colSums(counts),
@@ -329,15 +368,16 @@ bgcorrect_norm <- function(x, bg) {
 }
 
 
-bgcorrect_kde <- function(x, bg, bw.adjust=2) {
-  x <- log2(x1)
+bgcorrect_kde <- function(x, bg, bw.adjust=1) {
+  x <- log2(x)
   xmin <- min(x)
   xmax <- max(x)
-  bw <- bw.nrd(x[!bg]) * bw.adjust
-  bwbg <- bw.nrd(x[bg]) * bw.adjust
   n <- 10000
   epsbg <- 1e-15
   eps <- 1e-10
+
+  bw <- bw.nrd(x[!bg]) * bw.adjust
+  bwbg <- bw.nrd(x[bg]) * bw.adjust
 
   d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
   dbg <- density(x[bg], bw=bwbg, from=xmin, to=xmax, n=n)
@@ -363,97 +403,13 @@ bgcorrect_kde <- function(x, bg, bw.adjust=2) {
     dx = d$x,
     dy = d$y,
     dbg = dbg$y,
-    dcdf = dcdf,
-    dbgcdf = dbgcdf,
-    pnoise = pnoise,
-    scaled_pnoise = scaled_pnoise,
+    lr = lr,
+    scaled_lr = scaled_lr,
     bw = bw,
     bwbg = bwbg,
     eps = eps,
     epsbg = epsbg
   ))
-
-
-
-
-  x <- log2(x)
-  xmin <- min(x)
-  xmax <- max(x)
-  bw <- bw.nrd(x[!bg]) * bw.adjust
-  bwbg <- bw.nrd(x[bg]) * bw.adjust
-  n <- 10000
-  epsbg <- 1e-15
-  eps <- 1e-10
-
-  d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
-  dbg <- density(x[bg], bw=bwbg, from=xmin, to=xmax, n=n)
-
-  # compute cdfs
-  dcdf <- cumsum(d$y) / sum(d$y)
-  dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
-
-  # prob noise is (1-cdf(bg) / (1-cdf(x))
-  pnoise <- (1 - dbgcdf + epsbg) / (1 - dcdf + eps)
-  # upper bound 1 (prob noise cannot be greater than gene)
-  pnoise <- pmin(pnoise, 1)
-  # force prob to the left of median of noise distribution equals 1
-  #idx <- which(d$x <= median(x[bg]))
-  #pnoise[idx] <- 1
-
-  # scale prob noise to count values of x
-  scaled_pnoise <- xmin + (xmax - xmin) * cumsum(pnoise) / n
-  # linear interpolation to estimate noise component for each value of x
-  noise <- approx(d$x, scaled_pnoise, xout=x)$y
-  # noise can't be greater than original vector
-  noise <- pmin(noise, x)
-  # perform background subtraction
-  y <- 2^x - 2^noise + 1
-
-  return(list(
-    y = y,
-    dx = d$x,
-    dy = d$y,
-    dbg = dbg$y,
-    dcdf = dcdf,
-    dbgcdf = dbgcdf,
-    pnoise = pnoise,
-    scaled_pnoise = scaled_pnoise,
-    bw = bw,
-    bwbg = bwbg,
-    eps = eps,
-    epsbg = epsbg
-  ))
-
-  # likelihood ratio
-  # lower bound by epsbg / eps
-  #lr <- (dbg$y + epsbg) / (d$y + eps)
-  # upper bound 1
-  #lr <- pmin(lr, 1)
-  # LR to the left of median of noise distribution equals 1
-  #idx <- which(d$x <= median(x[bg]))
-  #lr[idx] <- 1
-  # convert LR to noise ratios across values of x
-  #scaled_lr_cumsum <- xmin + (xmax - xmin) * cumsum(lr) / n
-  # linear interpolation to estimate noise component for each value of x
-  #noise <- approx(d$x, scaled_lr_cumsum, xout=x)$y
-  # noise can't be greater than original vector
-  #noise <- pmin(noise, x)
-  # perform background subtraction
-  #y <- 2^x - 2^noise + 1
-  # return(list(
-  #   y = y,
-  #   dx = d$x,
-  #   dy = d$y,
-  #   dbg = dbg$y,
-  #   dcdf = dcdf,
-  #   dbgcdf = dbgcdf,
-  #   lr = lr,
-  #   scaled_lr_cumsum = scaled_lr_cumsum,
-  #   bw = bw,
-  #   bwbg = bwbg,
-  #   eps = eps,
-  #   epsbg = epsbg
-  # ))
 }
 
 
@@ -541,7 +497,7 @@ calc_norm_factors_rle <- function(data) {
 st_geomx_normalize <- function(ds, bgcorrect=TRUE, method=c("qn", "rle", "cpm")) {
 
   if (bgcorrect) {
-    x <- st_geomx_bgcorrect(ds, method="kde")
+    x <- st_geomx_bgcorrect(ds, method="norm")
   } else {
     x <- ds$counts
   }
