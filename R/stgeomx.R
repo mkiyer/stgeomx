@@ -44,7 +44,7 @@ st_geomx_read <- function(xlsx_file,
     distinct(.data[[aoi_key_col]], .keep_all=TRUE)
 
   # read counts
-  counts <- read_excel(geomx_mel_xlsx, sheet="BioProbeCountMatrix",
+  counts <- read_excel(xlsx_file, sheet=count_sheet,
                        .name_repair = "minimal")
   # ensure all samples found in counts
   inds <- match(pull(samples, !!aoi_key_col), colnames(counts))

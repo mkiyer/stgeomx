@@ -1,0 +1,396 @@
+---
+title: "pja_ipmn2"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{pja_ipmn2}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(stgeomx)
+
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(arrow)
+library(limma)
+library(edgeR)
+
+library(patchwork)
+library(ggrepel)
+library(ggridges)
+library(pheatmap)
+
+save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
+  stopifnot(!missing(x))
+  stopifnot(!missing(filename))
+  pdf(filename, width=width, height=height)
+  grid::grid.newpage()
+  grid::grid.draw(x$gtable)
+  dev.off()
+}
+
+```
+
+
+
+```{r input files, include=FALSE}
+
+# master directory
+working_dir <- "/Users/mkiyer/Library/CloudStorage/OneDrive-DukeUniversity/research/projects/st_ipmn2"
+# input directories
+geomx_dir <- file.path(working_dir, "geomx")
+# geomx data
+geomx_xlsx <- file.path(geomx_dir, "pja_ipmn2_wta_2022-11-14.xlsx")
+
+# qc parameters
+geomx_negprobe_lod_quantile = 0.9
+geomx_min_counts = 1e5
+geomx_min_auc = 0.65
+geomx_aoi_min_frac_expr = 0.2
+geomx_gene_min_frac_expr = 0.2
+
+# normalization
+norm_method = "qn"
+
+# de parameters
+de_padj_cutoff <- 0.05
+de_log2fc_cutoff <- 1
+
+# gsea params
+gsea_padj_cutoff <- 0.05
+gsea_log2fc_cutoff <- 1
+
+plot_dir <- file.path(working_dir, "plots")
+if (!dir.exists(plot_dir)) {
+  dir.create(plot_dir)
+}
+
+```
+
+## Read and process geomx data
+
+```{r geomx data, include=FALSE}
+
+ds <- st_geomx_read(geomx_xlsx)
+ds <- st_geomx_process_input(ds, geomx_negprobe_lod_quantile)
+ds <- st_geomx_merge_probes(ds)
+
+```
+
+
+## QC and filtering AOI / Genes
+
+```{r choose filtering thresholds}
+
+summary(ds$samples$num_counts)
+summary(ds$samples$frac_expr)
+
+ds <- st_geomx_set_thresholds(ds, 
+                              min_counts = geomx_min_counts,
+                              min_auc = geomx_min_auc,
+                              aoi_min_frac_expr = geomx_aoi_min_frac_expr,
+                              gene_min_frac_expr = geomx_gene_min_frac_expr)
+
+table(ds$samples$keep)
+table(ds$meta$expressed)
+
+```
+
+## QC: AOI filtering
+
+```{r aoi filtering}
+
+p <- st_geomx_plot_aoi_filter(ds, geomx_min_counts, geomx_min_auc, geomx_aoi_min_frac_expr)
+p
+ggsave(file.path(plot_dir, "qc_aoi_filter.pdf"), p)
+
+```
+
+## QC: gene filtering cutoff
+
+```{r plot gene fraction detectable above bg}
+
+p <- st_geomx_plot_gene_filter(ds, 0.20)
+p
+ggsave(file.path(plot_dir, "qc_gene_filtering_fpr_auc.pdf"), p)
+
+```
+
+## QC: Background correction
+
+```{r background correction}
+
+x <- cpm(ds$counts)
+p <- st_geomx_plot_bgcorrect(ds, x)
+p
+f <- file.path(plot_dir, "qc_bgcorrect_none.pdf")
+ggsave(f, plot=p, device="pdf", width=8, height=12)
+
+p <- st_geomx_plot_bgcorrect_density(ds, x)
+p
+f <- file.path(plot_dir, "qc_bgcorrect_none_density.pdf")
+ggsave(f, plot=p, device="pdf", width=8, height=12)
+
+x <- cpm(st_geomx_bgcorrect(ds, method="norm"))
+p <- st_geomx_plot_bgcorrect(ds, x)
+p
+f <- file.path(plot_dir, "qc_bgcorrect_norm.pdf")
+ggsave(f, plot=p, device="pdf", width=8, height=12)
+
+p <- st_geomx_plot_bgcorrect_density(ds, x)
+p
+f <- file.path(plot_dir, "qc_bgcorrect_norm_density.pdf")
+ggsave(f, plot=p, device="pdf", width=8, height=12)
+
+
+```
+
+
+
+## Apply filters and normalize
+
+Consolidate technical replicates. When sample has replicates, choose replicate with greater signal-to-noise ratio
+
+```{r filter and normalize}
+
+fds <- list(samples = ds$samples,
+            meta = ds$meta,
+            counts = ds$counts)
+
+# apply filters
+fds <- st_geomx_filter(fds)
+
+# normalize
+y_bg_rle <- st_geomx_normalize(fds, bgcorrect=TRUE, method="rle")
+y_bg_qn <- st_geomx_normalize(fds, bgcorrect=TRUE, method="qn")
+y_bg_cpm <- st_geomx_normalize(fds, bgcorrect=TRUE, method="cpm")
+y_rle <- st_geomx_normalize(fds, bgcorrect=FALSE, method="rle")
+y_qn <- st_geomx_normalize(fds, bgcorrect=FALSE, method="qn")
+y_cpm <- st_geomx_normalize(fds, bgcorrect=FALSE, method="cpm")
+
+# choose normalized data to work with
+normcounts <- y_bg_qn
+
+```
+
+
+
+## QC plot: normalization
+
+```{r qc normalization}
+
+# sample annotations to use in plots
+s <- select(fds$samples, aoi, slide, keep)
+x <- bind_cols(fds$meta, normcounts)
+x <- x %>%
+  pivot_longer(s$aoi, names_to="aoi", values_to="count") %>%
+  inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
+
+y <- x %>%
+  group_by(aoi, expressed) %>%
+  summarise(slide = unique(slide),
+            med = median(count),
+            q3 = quantile(count, 0.75)) %>%
+  ungroup()
+
+p <- ggplot(x, aes(x=count, y=reorder(aoi, count), fill=slide)) +
+  stat_density_ridges(color="#00000066", alpha=0.4, scale=10, rel_min_height=0.001, quantile_lines=TRUE) +
+  scale_x_log10() +
+  scale_fill_manual(values = pals::cols25()) +
+  xlab("Count") +
+  ylab("AOIs") +
+  labs(fill = "Slide") +
+  theme_ridges() +
+  theme(axis.text.y = element_blank()) +
+  facet_grid(slide ~ ., scales="free_y")
+p
+f <- file.path(plot_dir, "qc_ridge_plot_norm_aoi.pdf")
+ggsave(f, plot=p, device="pdf", width = 8, height = 8)
+
+
+
+
+```
+
+
+## Unsupervised clustering / dimensionality reduction
+
+```{r dim reduction}
+library(factoextra)
+library(umap)
+
+most_cv_genes <- function(x, ntop=500) {
+  rv <- apply(x, 1, function(x) sd(x) / mean(x))
+  keep <- order(rv, decreasing=TRUE)[seq_len(min(ntop, length(rv)))]
+  return(x[keep,])
+}
+
+run_pca <- function(x) {
+  pca <- prcomp(t(x))
+  pct_var <- round(100 * pca$sdev^2 / sum( pca$sdev^2 ), 2)
+  pct_var <- paste(colnames(pca$x), " (", paste(as.character(pct_var), "%", ")", sep=""), sep="")
+  return(list(pca = pca, pct_var = pct_var))
+}
+
+y <- log2(normcounts)
+y <- most_cv_genes(y, 5000)
+
+pca_res <- run_pca(y)
+pca_tbl <- bind_cols(fds$samples, as_tibble(pca_res$pca$x))
+
+# pca plots
+p <- ggplot(pca_tbl, aes(x=PC1, y=PC2)) +
+  theme_minimal() +
+  labs(x=pca_res$pct_var[1], y=pca_res$pct_var[2])
+
+# qc factors
+p1 <- p + geom_point(aes(color=bg_auc), alpha = 0.8, size=2) +
+  scale_color_viridis_c()
+p1
+ggsave(file.path(plot_dir, "pca_bg_auc.pdf"), plot=p1, device="pdf")
+
+
+# investigate contributions to pca
+res.pca <- prcomp(y, scale = TRUE)
+p <- fviz_pca_ind(res.pca, select.ind=list(contrib=20), repel=TRUE, ggrepel.max.overlaps=Inf)
+p
+ggsave(file.path(plot_dir, "pca_ind.pdf"), p)
+
+p <- fviz_contrib(res.pca, choice = "ind", axes = 1, top=20, max.overlaps=Inf)
+p
+ggsave(file.path(plot_dir, "pca_contrib.pdf"), p)
+
+
+# UMAP variable genes
+umap_fit <- t(y) %>%
+   scale() %>% 
+   umap()
+umap_df <- umap_fit$layout %>%
+   as.data.frame() %>%
+   dplyr::rename(umap1 = "V1",
+                 umap2 = "V2")
+umap_df <- bind_cols(fds$samples, umap_df)
+
+
+p <- ggplot(umap_df, aes(x=umap1, y=umap2)) +
+  theme_minimal()
+
+p1 <- p + geom_point(aes(color=bg_auc), alpha = 0.8, size=2) +
+  scale_color_viridis_c()
+p1
+
+
+
+```
+
+## Clustering high variance genes
+
+```{r}
+library(pheatmap)
+
+y <- log2(normcounts)
+y <- most_cv_genes(y, 1000)
+
+s <- fds$samples %>% mutate(noise_quantile = ntile(desc(bg_auc), 4))
+
+annot_col <- column_to_rownames(s, "aoi") %>% 
+  select(slide = slide,
+         noise_quantile = noise_quantile) %>%
+  as.data.frame()
+
+p <- pheatmap(y,
+         scale="row",
+         show_rownames=FALSE,
+         show_colnames=FALSE,
+         border_color=NA,
+         clustering_method = "average",
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         breaks = seq(-3, 3, 0.05),
+         color = colorRampPalette(c("purple3", "black", "yellow2"))(120),
+         annotation_col = annot_col)
+
+f <- file.path(plot_dir, "heatmap_cluster_highcv_genes.pdf")
+save_pheatmap_pdf(p, filename=f, width=12, height=8)
+
+```
+
+## Differential expression analysis
+
+```{r de analysis setup}
+
+limma_rename_result_cols <- function(res) {
+  as_tibble(res, rownames="gene") %>%
+    select(gene,
+           log2fc=logFC,
+           avgexpr=AveExpr,
+           pval=P.Value,
+           padj=adj.P.Val)
+}
+
+de_format_results <- function(res, analysis, method, 
+                              padj_cutoff, log2fc_cutoff) {
+  mutate(res, 
+         de = case_when(padj > padj_cutoff ~ "no",
+                        log2fc < -log2fc_cutoff ~ "dn",
+                        log2fc > log2fc_cutoff ~ "up",
+                        TRUE ~ "no"),
+         analysis = analysis,
+         method = method)
+}
+
+run_limma_trend <- function(y, design, contrasts) {
+  fit <- lmFit(y, design)
+  fit <- contrasts.fit(fit, contrasts)
+  fit <- eBayes(fit, trend=TRUE)
+  return(fit)
+}
+
+process_limma <- function(fit, contrasts, method, 
+                          padj_cutoff, log2fc_cutoff) {
+  x <- NULL
+  for (coef in colnames(contrasts)) {
+    res <- topTable(fit, coef=coef, number=Inf, sort.by="none")
+    res <- limma_rename_result_cols(res)
+    res <- de_format_results(res, 
+                             analysis=coef, 
+                             method=method,
+                             padj_cutoff=padj_cutoff, 
+                             log2fc_cutoff=log2fc_cutoff)
+    x <- bind_rows(x, res)
+  }
+  return(x)
+}
+
+
+plot_de_volcano <- function(res) {
+  # res <- res %>% 
+  #   mutate(de = case_when(padj > 0.05 ~ "no",
+  #                         log2fc < 0 ~ "dn",
+  #                         log2fc > 0 ~ "up"))
+  p <- ggplot(res, aes(x=log2fc, y=-log10(padj), color=de, size=de)) +
+    geom_point(alpha=0.7) +
+    geom_text_repel(data=subset(res, de != "no"), color="black", size=3, aes(label=gene), max.overlaps=Inf) +
+    scale_color_manual(values=c("no"="grey", "dn"="blue", "up"="red")) +
+    scale_size_manual(values=c("no"=1, "dn"=2, "up"=2)) +
+    theme_minimal() +
+    theme(legend.position="bottom") + 
+    theme(axis.line = element_line(color = "black"))
+    labs(x="log2fc", y="-log10(padj)")
+  return(p)
+}
+
+
+```
+
+
+
