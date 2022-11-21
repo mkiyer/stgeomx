@@ -155,6 +155,7 @@ calc_bg_stats <- function(meta, counts, bg_lod_quantile) {
     bg_geomean = apply(x, 2, geomean),
     bg_median = apply(x, 2, stats::median),
     bg_q3 = apply(x, 2, stats::quantile, 0.75),
+    bg_max = apply(x, 2, max),
     bg_lod = apply(x, 2, stats::quantile, bg_lod_quantile)
   )
   return(y)
@@ -211,6 +212,7 @@ st_geomx_process_input <- function(ds, bg_lod_quantile) {
     count_geomean = apply(x, 2, geomean),
     count_median = apply(x, 2, stats::median),
     count_q3 = apply(x, 2, stats::quantile, 0.75),
+    count_max = apply(x, 2, max)
   ) %>% mutate(
     snr_geomean = count_geomean / bg_geomean,
     snr_median = count_median / bg_median,
@@ -268,6 +270,28 @@ st_geomx_merge_probes <- function(ds) {
              meta=bind_rows(meta, bgmeta),
              counts=bind_rows(counts, bgcounts))
   return(ds)
+}
+
+
+
+#'
+#' Remove AOIs with no valid counts
+#'
+#' @importFrom magrittr %>%
+#' @import dplyr
+#'
+#' @param ds list produced by st_geomx_merge_probes
+#' @returns list dataset
+#' @export
+st_geomx_rm_empty_aois <- function(ds) {
+  # initial filter of "empty" samples with essential zero counts
+  keep <- ds$samples$count_max > 1
+  fds <- list(
+    samples = filter(ds$samples, keep),
+    meta = ds$meta,
+    counts = ds$counts[, keep]
+  )
+  return(fds)
 }
 
 
@@ -360,10 +384,16 @@ background_subtract <- function(x, offset=0, min.count=1) {
 }
 
 
-bgcorrect_norm <- function(x, bg) {
+bgcorrect_norm <- function(x, bg, log=TRUE) {
+  if (log) {
+    x <- log2(x)
+  }
   a <- sd(x[bg])^2 / sd(x[!bg])^2
   c <- a * mean(x[!bg]) - mean(x[bg])
   y <- (1-a)*x + c
+  if (log) {
+    y <- 2^y
+  }
   return(y)
 }
 
@@ -376,8 +406,8 @@ bgcorrect_kde <- function(x, bg, bw.adjust=1) {
   epsbg <- 1e-15
   eps <- 1e-10
 
-  bw <- bw.nrd(x[!bg]) * bw.adjust
-  bwbg <- bw.nrd(x[bg]) * bw.adjust
+  bw <- bw.nrd0(x[!bg]) * bw.adjust
+  bwbg <- bw.nrd0(x[bg]) * bw.adjust
 
   d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
   dbg <- density(x[bg], bw=bwbg, from=xmin, to=xmax, n=n)
@@ -413,13 +443,45 @@ bgcorrect_kde <- function(x, bg, bw.adjust=1) {
 }
 
 
+bgcorrect_wfpr <- function(x, bg, bw.adjust=2, w=2) {
+  x <- log2(x)
+  xmin <- min(x)
+  xmax <- max(x)
+  n <- 10000
+  eps <- 1e-10
+
+  bwbg <- bw.nrd0(x[bg]) * bw.adjust
+  dbg <- density(x[bg], bw=bwbg, from=xmin, to=xmax, n=n)
+  dfpr <- 1 - (cumsum(dbg$y + eps) / sum(dbg$y + eps))
+  dwfpr <- pmin(1, w * fpr)
+  scaled_wfpr <- xmin + (xmax - xmin) * cumsum(dwfpr) / n
+
+  noise <- approx(dbg$x, scaled_wfpr, xout=x)$y
+  # noise can't be greater than original vector
+  noise <- pmin(noise, x)
+  # perform background subtraction
+  #y <- 2^(x - noise)
+  y <- 2^x - 2^noise + 1
+
+  return(list(
+    y = y,
+    dx = dbg$x,
+    dy = dbg$y,
+    dwfpr = dwfpr,
+    scaled_wfpr = scaled_wfpr,
+    bwbg = bwbg,
+    eps = eps
+  ))
+}
+
+
 #'
 #' background correction
 #'
 #' @param ds list dataset
 #' @returns matrix of background corrected counts-per-million
 #' @export
-st_geomx_bgcorrect <- function(ds, method=c("norm", "kde")) {
+st_geomx_bgcorrect <- function(ds, method=c("norm", "kde", "wfpr"), bw.adjust=2, w=2) {
   bg <- ds$meta$bg
   x <- ds$counts
 
@@ -427,13 +489,18 @@ st_geomx_bgcorrect <- function(ds, method=c("norm", "kde")) {
     return(bgcorrect_norm(x, bg))
   }
   apply_bgcorrect_kde <- function(x) {
-    return(bgcorrect_kde(x, bg)$y)
+    return(bgcorrect_kde(x, bg, bw.adjust=bw.adjust)$y)
+  }
+  apply_bgcorrect_wfpr <- function(x) {
+    return(bgcorrect_wfpr(x, bg, bw.adjust=bw.adjust, w=w)$y)
   }
 
   if (method == "norm") {
     x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_norm)
   } else if (method == "kde") {
     x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_kde)
+  } else if (method == "wfpr") {
+    x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_wfpr)
   } else {
     stop("method not found")
   }
@@ -489,23 +556,17 @@ calc_norm_factors_rle <- function(data) {
 #'
 #' background subtraction and scale/quantile normalization
 #'
-#' @param x matrix of counts
-#' @param bgsub bool perform background subtraction
+#' @param ds list dataset
+#' @param x matrix of transformed counts
 #' @param method string normalization method
 #' @returns matrix of normalized counts
 #' @export
-st_geomx_normalize <- function(ds, bgcorrect=TRUE, method=c("qn", "rle", "cpm")) {
-
-  if (bgcorrect) {
-    x <- st_geomx_bgcorrect(ds, method="norm")
-  } else {
-    x <- ds$counts
-  }
+st_geomx_normalize <- function(ds, x, method=c("qn", "rle", "cpm")) {
 
   if (method == "qn") {
     x <- normalize_quantile(cpm(x))
   } else if (method == "rle") {
-    sf <- colSums(ds$counts) / 1e6
+    sf <- colSums(x) / 1e6
     nf <- calc_norm_factors_rle(x) / sf
     nf <- nf / geomean(nf)
     x <- sweep(x, 2, sf * nf, FUN="/")

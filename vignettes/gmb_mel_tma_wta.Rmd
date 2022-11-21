@@ -278,6 +278,19 @@ f <- file.path(plot_dir, "qc_bgcorrect_norm_density.pdf")
 ggsave(f, plot=p, device="pdf", width=8, height=12)
 
 
+x <- cpm(st_geomx_bgcorrect(ds, method="wfpr", bw.adjust=2, w=1))
+p <- st_geomx_plot_bgcorrect(ds, x)
+p
+f <- file.path(plot_dir, "qc_bgcorrect_wfpr.pdf")
+ggsave(f, plot=p, device="pdf", width=8, height=12)
+
+p <- st_geomx_plot_bgcorrect_density(ds, x)
+p
+f <- file.path(plot_dir, "qc_bgcorrect_wfpr_density.pdf")
+ggsave(f, plot=p, device="pdf", width=8, height=12)
+
+
+
 ```
 
 
@@ -301,19 +314,19 @@ fds <- list(samples = s,
 # apply filters
 fds <- st_geomx_filter(fds)
 
+# bg correct
+x <- st_geomx_bgcorrect(fds, method="wfpr", bw.adjust=2, w=1)
+
 # normalize
-y_bg_rle <- st_geomx_normalize(fds, bgcorrect=TRUE, method="rle")
-y_bg_qn <- st_geomx_normalize(fds, bgcorrect=TRUE, method="qn")
-y_bg_cpm <- st_geomx_normalize(fds, bgcorrect=TRUE, method="cpm")
-y_rle <- st_geomx_normalize(fds, bgcorrect=FALSE, method="rle")
-y_qn <- st_geomx_normalize(fds, bgcorrect=FALSE, method="qn")
-y_cpm <- st_geomx_normalize(fds, bgcorrect=FALSE, method="cpm")
+y_bg_rle <- st_geomx_normalize(fds, x, method="rle")
+y_bg_qn <- st_geomx_normalize(fds, x, method="qn")
+y_bg_cpm <- st_geomx_normalize(fds, x, method="cpm")
 
 # choose normalized data to work with
 normcounts <- y_bg_qn
 
-```
 
+```
 
 
 ## QC plot: normalization
@@ -411,7 +424,7 @@ run_pca <- function(x) {
 }
 
 y <- log2(normcounts)
-y <- most_cv_genes(y, 5000)
+y <- most_cv_genes(y, 1000)
 
 pca_res <- run_pca(y)
 pca_tbl <- bind_cols(fds$samples, as_tibble(pca_res$pca$x))
@@ -496,7 +509,7 @@ p1
 library(pheatmap)
 
 y <- log2(normcounts)
-y <- most_cv_genes(y, 1000)
+y <- most_cv_genes(y, 2000)
 
 s <- fds$samples %>% mutate(noise_quantile = ntile(desc(bg_auc), 4))
 
@@ -696,6 +709,7 @@ p
 ggsave(file.path(plot_dir, "de_volcano_os_q0_vs_q3.pdf"), p)
 
 
+de %>% filter(analysis == "acral") %>% arrange(padj)
 de %>% filter(padj < 0.05)
 # de %>% filter(de != "no")
 # de %>% arrange(desc(avgexpr), desc(log2fc)) %>% distinct(gene, .keep_all=TRUE)
@@ -726,10 +740,12 @@ plot_gene <- function(s, x, gene, aes_x, aes_color) {
 }
 
 
-de %>% filter(gene == "PI15")
+de %>% filter(gene == "PMM1")
+p <- plot_gene(s, y, "PMM1", acral, acral)
+p
 
-
-p <- plot_gene(s, y, "AFAP1L2", os_quartile, os_quartile)
+p <- plot_gene(s, y, "PI15", os_quartile, os_quartile)
+p
 ggsave(file.path(plot_dir, "gene_afap1l2_os.pdf"), p)
 
 
@@ -1079,17 +1095,17 @@ p
 bg <- ds$meta$bg
 x <- ds$counts
 
-bw.adjust = 1
-sort(ds$samples$bg_auc)[1:10]
+bw.adjust = 2
+w <- 1
+sort(ds$samples$bg_auc)[30:40]
 sort(ds$samples$bg_auc, decreasing=TRUE)[1:10]
-s <- "s06_r059_fullroi"
+s <- "s05_r005_fullroi"
 x1 <- unlist(x[,s])
-
 
 ks.test(x=sample(x1, size=sum(bg), replace=FALSE), y=x1[bg], alternative="less")
 
-res <- bgcorrect_kde(x1, bg, bw.adjust=bw.adjust)
-reskde <- pmax(1, res$y)
+res <- bgcorrect_wfpr(x1, bg, bw.adjust=bw.adjust, w=w)
+#res <- bgcorrect_kde(x1, bg, bw.adjust=bw.adjust)
 resnorm <- pmax(1, bgcorrect_norm(x1, bg))
 resbgsub <- pmax(1, x1 - geomean(x1[bg]))
 
@@ -1100,8 +1116,13 @@ range(res$y)
 range(resnorm)
 range(resbgsub)
 
+
+range(x1 - resnorm)
+range(x1 - res$y)
+
+
 tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
-                 bind_cols(value = reskde, bgcorrect="kde", bg=bg),
+                 bind_cols(value = res$y, bgcorrect="kde", bg=bg),
                  bind_cols(value = resnorm, bgcorrect="norm", bg=bg),
                  bind_cols(value = resbgsub, bgcorrect="bgsub", bg=bg))
 ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
@@ -1111,18 +1132,31 @@ ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
 
 tbl <- bind_cols(dx=res$dx, 
                  dy=res$dy, 
-                 dy2=res$dy2,
-                 dbg=res$dbg, 
-                 lr=res$lr)
+                 dwfpr=res$dwfpr)
 ggplot(tbl) +
   geom_line(aes(dx, dy)) +
-  geom_line(aes(dx, dbg), color="red") +
-  geom_line(aes(dx, lr), color="blue")
+  geom_line(aes(dx, dwfpr), color="blue")
+
+ggplot(tbl) +
+  geom_line(aes(dx, min(log2(x1)) + (max(log2(x1)) - min(log2(x1))) * cumsum(dwfpr)/10000))
+
+
+#  scaled_wfpr <- xmin + (xmax - xmin) * cumsum(dwfpr) / n
+
+
+# tbl <- bind_cols(dx=res$dx, 
+#                  dy=res$dy, 
+#                  dy2=res$dy2,
+#                  dbg=res$dbg, 
+#                  lr=res$lr)
+# ggplot(tbl) +
+#   geom_line(aes(dx, dy)) +
+#   geom_line(aes(dx, dbg), color="red") +
+#   geom_line(aes(dx, lr), color="blue")
 
 ggplot(tbl) +
   geom_line(aes(dx, -log10(dy+res$eps))) +
-  geom_line(aes(dx, -log10(dbg+res$epsbg)), color="red") +
-  geom_line(aes(dx, -log10(lr)), color="blue")
+  geom_line(aes(dx, -log10(dwfpr)), color="blue")
 
 tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
                  bind_cols(value = res$y, bgcorrect="after", bg=bg))
