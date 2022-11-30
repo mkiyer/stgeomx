@@ -64,7 +64,7 @@ geomx_negprobe_lod_quantile = 0.9
 geomx_min_counts = 1e6
 geomx_min_auc = 0.70
 geomx_aoi_min_frac_expr = 0.2
-geomx_gene_min_frac_expr = 0.2
+geomx_gene_min_frac_expr = 0.1
 
 # normalization
 norm_method = "qn"
@@ -277,19 +277,11 @@ p
 f <- file.path(plot_dir, "qc_bgcorrect_norm_density.pdf")
 ggsave(f, plot=p, device="pdf", width=8, height=12)
 
-
-x <- cpm(st_geomx_bgcorrect(ds, method="wfpr", bw.adjust=2, w=1))
+x <- cpm(st_geomx_bgcorrect(ds, method="kdefdr", bw.adjust=3, fdr.min=0.1))
 p <- st_geomx_plot_bgcorrect(ds, x)
 p
-f <- file.path(plot_dir, "qc_bgcorrect_wfpr.pdf")
-ggsave(f, plot=p, device="pdf", width=8, height=12)
-
 p <- st_geomx_plot_bgcorrect_density(ds, x)
 p
-f <- file.path(plot_dir, "qc_bgcorrect_wfpr_density.pdf")
-ggsave(f, plot=p, device="pdf", width=8, height=12)
-
-
 
 ```
 
@@ -315,7 +307,11 @@ fds <- list(samples = s,
 fds <- st_geomx_filter(fds)
 
 # bg correct
-x <- st_geomx_bgcorrect(fds, method="wfpr", bw.adjust=2, w=1)
+#x <- fds$counts
+#x <- st_geomx_bgcorrect(fds, method="bgsub")
+#x <- st_geomx_bgcorrect(fds, method="geonorm")
+#x <- st_geomx_bgcorrect(fds, method="norm")
+x <- st_geomx_bgcorrect(fds, method="kdefdr", bw.adjust=3, fdr.min=0.1)
 
 # normalize
 y_bg_rle <- st_geomx_normalize(fds, x, method="rle")
@@ -325,8 +321,52 @@ y_bg_cpm <- st_geomx_normalize(fds, x, method="cpm")
 # choose normalized data to work with
 normcounts <- y_bg_qn
 
+```
+
+
+```{r check normalization}
+
+y <- log2(normcounts)
+pca_res <- prcomp(t(y), center=TRUE, scale=TRUE)
+pca_tbl <- bind_cols(fds$samples, as_tibble(pca_res$x))
+pct_var <- pca_res$sdev^2 / sum(pca_res$sdev^2)
+pct_var_lbl <- round(100 * pct_var, 2)
+pct_var_lbl <- paste(colnames(pca_res$x), " (", paste(as.character(pct_var_lbl), "%", ")", sep=""), sep="")
+
+score <- (abs(cor(pca_tbl$PC1, pca_tbl$bg_cpm)) * pct_var[1] +
+            abs(cor(pca_tbl$PC2, pca_tbl$bg_cpm)) * pct_var[2] +
+            abs(cor(pca_tbl$PC3, pca_tbl$bg_cpm)) * pct_var[3] +
+            abs(cor(pca_tbl$PC4, pca_tbl$bg_cpm)) * pct_var[4])
+score
+
+ggplot(pca_tbl, aes(bg_cpm, PC1)) + 
+  geom_point() + 
+  geom_smooth(method='lm', formula= y~x) +
+  labs(y=pct_var_lbl[1], title=cor.test(pca_tbl$PC1, pca_tbl$bg_cpm)$estimate)
+ggplot(pca_tbl, aes(bg_cpm, PC2)) + 
+  geom_point() + 
+  geom_smooth(method='lm', formula= y~x) +
+  labs(y=pct_var_lbl[2], title=cor.test(pca_tbl$PC2, pca_tbl$bg_cpm)$estimate)
+ggplot(pca_tbl, aes(bg_cpm, PC3)) + 
+  geom_point() + 
+  geom_smooth(method='lm', formula= y~x) +
+  labs(y=pct_var_lbl[3], title=cor.test(pca_tbl$PC3, pca_tbl$bg_cpm)$estimate)
+
+p <- ggplot(pca_tbl, aes(x=PC1, y=PC2)) +
+  theme_minimal() +
+  labs(x=pct_var_lbl[1], y=pct_var_lbl[2], title=100*score) +
+  geom_point(aes(color=bg_cpm), alpha = 0.8, size=2) +
+  scale_color_viridis_c()
+p
+
+
+# cor.test(pca_tbl$PC1, pca_tbl$bg_cpm)
+# cor.test(pca_tbl$PC2, pca_tbl$bg_cpm)
+# cor.test(pca_tbl$PC3, pca_tbl$bg_cpm)
+
 
 ```
+
 
 
 ## QC plot: normalization
@@ -422,6 +462,7 @@ run_pca <- function(x) {
   pct_var <- paste(colnames(pca$x), " (", paste(as.character(pct_var), "%", ")", sep=""), sep="")
   return(list(pca = pca, pct_var = pct_var))
 }
+
 
 y <- log2(normcounts)
 y <- most_cv_genes(y, 1000)
@@ -711,7 +752,8 @@ ggsave(file.path(plot_dir, "de_volcano_os_q0_vs_q3.pdf"), p)
 
 de %>% filter(analysis == "acral") %>% arrange(padj)
 de %>% filter(padj < 0.05)
-# de %>% filter(de != "no")
+
+de %>% filter(gene == "EPHA4")
 # de %>% arrange(desc(avgexpr), desc(log2fc)) %>% distinct(gene, .keep_all=TRUE)
 # de %>% filter(gene == "LZTR1")
 
@@ -1088,96 +1130,591 @@ p
 ```
 
 
-## Density approx BG correction
+## bg correction testing
 
-```{r bg correction using kernel density}
+```{r bg correction testing}
 
 bg <- ds$meta$bg
 x <- ds$counts
 
-bw.adjust = 2
-w <- 1
-sort(ds$samples$bg_auc)[30:40]
+sort(ds$samples$bg_auc)[1:20]
 sort(ds$samples$bg_auc, decreasing=TRUE)[1:10]
-s <- "s05_r005_fullroi"
+s <- "s04_r029_fullroi"
 x1 <- unlist(x[,s])
 
 ks.test(x=sample(x1, size=sum(bg), replace=FALSE), y=x1[bg], alternative="less")
 
-res <- bgcorrect_wfpr(x1, bg, bw.adjust=bw.adjust, w=w)
-#res <- bgcorrect_kde(x1, bg, bw.adjust=bw.adjust)
+reskdefdr <- bgcorrect_kdefdr2(x1, bg, bw.adjust=3, fdr.min=0.1)$y
 resnorm <- pmax(1, bgcorrect_norm(x1, bg))
+resgeonorm <- pmax(1, bgcorrect_geonorm(x1, bg))
 resbgsub <- pmax(1, x1 - geomean(x1[bg]))
 
-summary(res$y)
+summary(reskdefdr)
 summary(resnorm)
-
-range(res$y)
+summary(resgeonorm)
+summary(resbgsub)
+range(reskdefdr)
 range(resnorm)
+range(resgeonorm)
 range(resbgsub)
 
-
-range(x1 - resnorm)
-range(x1 - res$y)
-
-
 tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
-                 bind_cols(value = res$y, bgcorrect="kde", bg=bg),
                  bind_cols(value = resnorm, bgcorrect="norm", bg=bg),
-                 bind_cols(value = resbgsub, bgcorrect="bgsub", bg=bg))
+                 bind_cols(value = resgeonorm, bgcorrect="geonorm", bg=bg),
+                 bind_cols(value = resbgsub, bgcorrect="bgsub", bg=bg),
+                 bind_cols(value = reskdefdr, bgcorrect="kdefdr", bg=bg))
 ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
-  stat_density_ridges(alpha=0.5, bandwidth=res$bw) +
+  stat_density_ridges(alpha=0.5) +
   scale_fill_manual(values = pals::cols25()) + 
   scale_x_log10()
 
-tbl <- bind_cols(dx=res$dx, 
-                 dy=res$dy, 
-                 dwfpr=res$dwfpr)
-ggplot(tbl) +
-  geom_line(aes(dx, dy)) +
-  geom_line(aes(dx, dwfpr), color="blue")
-
-ggplot(tbl) +
-  geom_line(aes(dx, min(log2(x1)) + (max(log2(x1)) - min(log2(x1))) * cumsum(dwfpr)/10000))
-
-
-#  scaled_wfpr <- xmin + (xmax - xmin) * cumsum(dwfpr) / n
-
-
-# tbl <- bind_cols(dx=res$dx, 
-#                  dy=res$dy, 
-#                  dy2=res$dy2,
-#                  dbg=res$dbg, 
-#                  lr=res$lr)
-# ggplot(tbl) +
-#   geom_line(aes(dx, dy)) +
-#   geom_line(aes(dx, dbg), color="red") +
-#   geom_line(aes(dx, lr), color="blue")
-
-ggplot(tbl) +
-  geom_line(aes(dx, -log10(dy+res$eps))) +
-  geom_line(aes(dx, -log10(dwfpr)), color="blue")
-
-tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
-                 bind_cols(value = res$y, bgcorrect="after", bg=bg))
-
-ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
-  stat_density_ridges(alpha=0.5, bandwidth=res$bw) +
-  scale_fill_manual(values = pals::cols25()) + 
-  scale_x_log10()
-
-
-tbl <- bind_cols(x1=x1, y1=resnorm, bg=bg)
+tbl <- bind_cols(x1=x1, ynorm=resnorm, ygeonorm=resgeonorm, yfdr=reskdefdr, bg=bg)
 ggplot(tbl) + 
-  geom_point(data=filter(tbl, bg), aes(x1, y1), size=3, alpha=0.7, color="red") +
-  geom_line(data=filter(tbl, !bg), aes(x1, y1), color="black") +
-  geom_hline(yintercept = mean(tbl$y1[bg]), color="red", linetype="dashed") +
-  geom_vline(xintercept = mean(tbl$x1[bg]), color="red", linetype="dashed") + 
+  geom_point(data=filter(tbl, bg), aes(x1, ynorm), size=3, alpha=0.5, color="blue") +
+  geom_line(data=filter(tbl, !bg), aes(x1, ynorm), color="blue") +
+  geom_point(data=filter(tbl, bg), aes(x1, ygeonorm), size=3, alpha=0.5, color="red") +
+  geom_line(data=filter(tbl, !bg), aes(x1, ygeonorm), color="red") +
+  geom_point(data=filter(tbl, bg), aes(x1, yfdr), size=3, alpha=0.5, color="green") +
+  geom_line(data=filter(tbl, !bg), aes(x1, yfdr), color="green") +
+#  geom_hline(yintercept = mean(tbl$y1[bg]), color="red", linetype="dashed") +
+#  geom_vline(xintercept = mean(tbl$x1[bg]), color="red", linetype="dashed") + 
   scale_x_log10() + 
   scale_y_log10()
 
 ```
 
+## Explore bg distribution using fdr
+
+```{r bgcorrect fdr exploration}
+
+bg <- ds$meta$bg
+x <- ds$counts
+
+sort(ds$samples$bg_auc)[1:20]
+sort(ds$samples$bg_auc, decreasing=TRUE)[1:50]
+s <- "s01_r020_fullroi"
+x1 <- unlist(x[,s])
+
+x <- log2(x1)
+xmin <- min(x)
+xmax <- max(x)
+n <- 10000
+fdr.min <- 0.01
+
+descdist(x[bg], discrete = FALSE, boot=1000)
+fitbg <- MASS::fitdistr(x[bg], "logistic")
+fitbg$estimate["location"]
+fitbg$estimate["scale"]
+xbg <- rlogis(length(x[!bg]), location=fitbg$estimate["location"], scale=fitbg$estimate["scale"])
+
+
+bw.adjust <- 3
+bw <- bw.nrd(x) * bw.adjust
+
+d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
+#dbg <- density(x[bg], bw=bw, from=xmin, to=xmax, n=n)
+dbg <- density(xbg, bw=bw, from=xmin, to=xmax, n=n)
+
+dcdf <- cumsum(d$y) / (sum(d$y))
+dbgcdf <- cumsum(dbg$y) / (sum(dbg$y))
+dbgcdf <- pmax(dbgcdf, dcdf)
+
+dfdr <- (1-dbgcdf) / (1-dcdf)
+dfdr[which(is.nan(dfdr))] <- min(dfdr[which(!is.nan(dfdr))])
+dfdr <- pmin(1, dfdr + fdr.min)
+
+scaled_fdr <- xmin + (xmax - xmin) * cumsum(dfdr) / n
+scaled_fdr <- pmin(d$x, scaled_fdr)
+noise <- approx(d$x, scaled_fdr, xout=x)$y
+noise <- pmin(noise, x)
+
+y <- 2^(x - noise)
+#y <- 2^x - 2^noise + 1
+
+tbl <- bind_cols(dx = d$x,
+                 dy = d$y,
+                 dbg = dbg$y,
+                 dbgcdf = dbgcdf,
+                 dfdr = dfdr,
+                 scaled_fdr = scaled_fdr)
+
+ggplot(tbl) +
+  geom_line(aes(dx, dy)) +
+  geom_line(aes(dx, dbg), color="red")
+
+ggplot(tbl) +
+  geom_line(aes(dx, dfdr), alpha=0.5, color="blue") +
+  geom_line(aes(dx, dcdf)) +
+  geom_line(aes(dx, dbgcdf), color="red")
+
+ggplot(tbl) +
+  geom_line(aes(dx, scaled_fdr))
+
+tbl <- bind_cols(x=x1, y=y, noise=2^noise, bg=bg)
+ggplot(tbl) + 
+  geom_point(data=filter(tbl, bg), aes(x, y), size=3, alpha=0.5, color="red") +
+  geom_point(data=filter(tbl, !bg), aes(x, y), size=1, alpha=0.3) +
+  geom_line(data=filter(tbl, !bg), aes(x, y), alpha=0.5) +
+  geom_line(aes(x, noise), color="blue") +
+  geom_hline(yintercept = mean(tbl$y[bg]), color="red", linetype="dashed") +
+  geom_vline(xintercept = mean(tbl$x[bg]), color="red", linetype="dashed") + 
+  scale_x_log10() +
+  scale_y_log10()
+
+
+approx(d$x, dbg$y, xout=mean(x))
+approx(d$x, d$y, xout=mean(x))
+approx(d$x, dfdr, xout=mean(x))
+
+
+
+```
+
+## explore clustering with kmeans / sum of squares
+
+```{r clustering kmeans}
+
+cluster_noise <- function(x, bg, scale="log2") {
+  
+  if (scale == "log2") {
+    x <- log2(x)
+  } else if (scale == "rank") {
+    x <- rank(x, ties.method="first")
+  }
+
+  xgene <- sort(x[!bg])
+  xgene.cumsum <- cumsum(xgene)
+  xgene.sum <- xgene.cumsum[length(xgene)]
+  
+  bg_center <- mean(x[bg])
+  bg_dists <- cumsum(abs(xgene - bg_center))
+  #bg_dists <- cumsum((xgene - bg_center)^2)
+
+  hi_centers <- rep(0, length(xgene))
+  hi_dists <- rep(0, length(xgene))
+  for (i in 1:(length(xgene)-1)) {
+    hi_centers[i] <- (xgene.sum - xgene.cumsum[i])/(length(xgene) - i)
+    hi_dists[i] <- sum(abs(xgene[(i+1):length(xgene)] - hi_centers[i]))
+    #hi_dists[i] <- sum((xgene[(i+1):length(xgene)] - hi_centers[i])^2)
+  }
+  tot_dists <- bg_dists + hi_dists
+  cutoff_index <- which.min(tot_dists)
+  cutoff <- xgene[cutoff_index]
+  hi_center <- hi_centers[cutoff_index]
+  noise <- (x <= cutoff)
+  fpr <- sum(x[bg] > cutoff)/length(x[bg])
+  
+  return(list(x=xgene,
+              bg_center=bg_center,
+              hi_center=hi_center,
+              bg_dist=bg_dists, 
+              hi_dist=hi_dists, 
+              noise=noise,
+              fpr=fpr,
+              cutoff=cutoff))
+}
+
+bg <- ds$meta$bg
+x <- ds$counts
+
+sort(ds$samples$bg_auc)[1:20]
+sort(ds$samples$bg_auc, decreasing=TRUE)[1:50]
+s <- "s04_r058_fullroi"
+xs <- unlist(x[,s])
+
+a <- cluster_noise(xs, bg)
+
+tbl <- bind_cols(x=a$x,
+                 bg=a$bg_dist,
+                 hi=a$hi_dist,
+                 tot=a$bg_dist + a$hi_dist)
+
+ggplot(tbl) +
+  geom_point(aes(x,bg), color="red", alpha=0.5) +
+  geom_point(aes(x,hi), color="blue", alpha=0.5) +
+  geom_point(aes(x,tot)) + 
+  geom_vline(xintercept=a$bg_center, linetype="dashed", color="red") +
+  geom_vline(xintercept=a$hi_center, linetype="dashed", color="blue") +
+  geom_vline(xintercept=a$cutoff, linetype="dashed")
+
+clustering <- ifelse(bg, "bg", ifelse(a$noise, "no", "yes"))
+tbl <- bind_cols(x=xs, clustering=clustering)
+
+ggplot(tbl, aes(x=x, y=factor(clustering), fill=factor(clustering))) +
+  stat_density_ridges(alpha=0.5) +
+  scale_x_log10()
+
+
+
+```
+
+
+## Explore clustering with silhouette scores
+
+```{r clustering silhouette}
+library(cluster)
+
+bg <- ds$meta$bg
+x <- ds$counts
+
+sort(ds$samples$bg_auc)[1:20]
+sort(ds$samples$bg_auc, decreasing=TRUE)[1:50]
+s <- "s04_r062_fullroi"
+xs <- unlist(x[,s])
+xs <- log2(xs)
+
+xbg <- xs[bg]
+xbgrle <- rle(sort(xbg))
+xbg.length <- length(xbgrle$values)
+
+x <- xs[!bg]
+xrle <- rle(sort(x))
+x.length <- length(xrle$values)
+
+xvals <- c(xbgrle$values, xrle$values)
+xlens <- c(xbgrle$lengths, xrle$lengths)
+
+dmatrix <- matrix(0, length(xvals), length(xvals))
+for (i in 1:length(xvals)) {
+  for (j in 1:length(xvals)) {
+    dmatrix[i, j] <- xvals[i] - xvals[j]
+#    dmatrix[i, j] <- abs(xvals[i] - xvals[j])
+  }
+}
+dmatrix <- sweep(dmatrix, 2, xlens, FUN="*")
+#dmatrix <- as.matrix(dist(xvals))
+
+minclustsize <- 10
+irange <- (xbg.length + minclustsize):(length(xvals) - minclustsize)
+
+
+
+
+
+i <- irange[1000]
+clustering <- c(rep("bg", xbg.length), rep("lo", i - xbg.length), rep("hi", length(xvals) - i))
+
+clust_bg_n <- sum(xlens[1:xbg.length])
+clust_lo_n <- sum(xlens[(xbg.length+1):i])
+clust_hi_n <- sum(xlens[(i+1):length(xlens)])
+clust_bg_dsum <- apply(dmatrix[, 1:xbg.length], 1, sum)
+clust_lo_dsum <- apply(dmatrix[, (xbg.length+1):i], 1, sum)
+clust_hi_dsum <- apply(dmatrix[, (i+1):ncol(dmatrix)], 1, sum)
+
+dlo <- clust_lo_dsum[(xbg.length+1):i] / (clust_lo_n - xlens[(xbg.length+1):i])
+dbg <- clust_bg_dsum[(xbg.length+1):i] / clust_bg_n
+dhi <- clust_hi_dsum[(xbg.length+1):i] / clust_hi_n
+
+
+tbl <- bind_cols(x = xvals[(xbg.length+1):i],
+                 dbg = dbg,
+                 dlo = dlo,
+                 dhi = dhi)
+
+ggplot(tbl) +
+  geom_point(aes(x, dbg), color="red") +
+  geom_point(aes(x, dlo), color="blue") +
+  geom_point(aes(x, dhi), color="green")
+
+irange[1000]
+plot(dmatrix[1098,])
+clust_bg_dsum[1098]
+clust_lo_dsum[1098]
+clust_hi_dsum[1098]
+plot(clust_lo_dsum)
+
+
+
+clust_bg_n <- sum(xlens[1:xbg.length])
+clust_bg_dsum <- apply(dmatrix[, 1:xbg.length], 1, sum)
+
+minclustsize <- 10
+irange <- (xbg.length + minclustsize):(length(xvals) - minclustsize)
+a <- NULL
+b <- NULL
+c <- NULL
+d <- NULL
+for (i in irange) {
+  clust_lo_n <- sum(xlens[(xbg.length+1):i])
+  clust_hi_n <- sum(xlens[(i+1):length(xlens)])
+  clust_lo_dsum <- apply(dmatrix[, (xbg.length+1):i], 1, sum)
+  clust_hi_dsum <- apply(dmatrix[, (i+1):ncol(dmatrix)], 1, sum)
+  
+  dlo <- clust_lo_dsum[(xbg.length+1):i] / (clust_lo_n - xlens[(xbg.length+1):i])
+  dbg <- clust_bg_dsum[(xbg.length+1):i] / clust_bg_n
+  dhi <- clust_hi_dsum[(xbg.length+1):i] / clust_hi_n
+  
+  a[i] <- mean(dbg)
+  b[i] <- mean(dlo)
+  c[i] <- mean(dhi)
+  d[i] <- mean(dhi - dlo - dbg)
+}
+
+tbl <- bind_cols(x=xvals[irange],
+                 a=a[irange],
+                 b=b[irange],
+                 c=c[irange],
+                 d=d[irange])
+ggplot(tbl) +
+  geom_point(aes(x,a), color="red") +
+  geom_point(aes(x,b), color="blue") +
+  geom_point(aes(x,c), color="green") +
+  geom_point(aes(x,d))
+
+
+```
+
+
+
+
+
+```{r explore silhouette width approach}
+
+clustering <- c(rep(1, i), rep(2, length(xvals) - i))
+
+
+ai <- NULL
+for (j in 1:i) {
+  ai[j] <- d1sum[j] / (c1n - xlens[j])
+}
+for (j in (i+1):length(xvals)) {
+  ai[j] <- d2sum[j] / (c2n - xlens[j])
+}
+
+bi <- NULL
+for (j in 1:i) {
+  bi[j] <- d2sum[j] / c2n
+}
+for (j in (i+1):length(xvals)) {
+  bi[j] <- d1sum[j] / c1n
+}
+
+si <- (bi - ai) / pmax(ai, bi)
+
+
+tbl <- bind_cols(x=xvals, ai=ai, bi=bi, si=si, clustering=factor(clustering))
+ggplot(tbl) + 
+  geom_point(aes(x, ai, color=clustering))
+ggplot(tbl) + 
+  geom_point(aes(x, bi, color=clustering))
+ggplot(tbl) + 
+  geom_point(aes(x, si, color=clustering))
+
+
+
+i <- sum(bg)
+clust <- c(rep(1, i), rep(2, length(xs) - i))
+sil <- silhouette(clust, d)
+
+
+summary(sil)
+
+
+cluster::silhouette(list(x=c(1,2,3,4,5,6), clustering=c(1,1,1,2,2,2)),
+                    dist=dist(c(1,2,3,4,5,6)))
+
+
+
+
+
+```
+
+
+
+## Explore ks distance to partition gene probes into signal and noise
+
+```{r bgcorrect ks dist}
+
+bg <- ds$meta$bg
+x <- ds$counts
+
+sort(ds$samples$bg_auc)[1:20]
+sort(ds$samples$bg_auc, decreasing=TRUE)[1:50]
+s <- "s01_r056_fullroi"
+xs <- unlist(x[,s])
+
+minclustsize <- 20
+
+dist(c(1,2,3,4,5))
+
+xs <- log2(xs)
+x <- sort(xs[!bg])
+xall <- unique(sort(xs))
+
+xrle <- rle(x)
+xrle.n <- length(xrle$values)
+xcumsum <- cumsum(xrle$lengths)
+
+xbg <- sort(xs[bg])
+xbgrle <- rle(xbg)
+xbgcdf <- cumsum(xbgrle$lengths)/length(xbg)
+
+bgcdf <- approx(xbgrle$values, xbgcdf, xout=xall, yleft=0, yright=1)$y
+
+dlo <- rep(0, length(xall))
+dhi <- rep(0, length(xall))
+for (i in minclustsize:(length(xall)-minclustsize)) {
+  locdf <- xcumsum[1:(i-1)] / xcumsum[(i-1)]
+  hicdf <- xcumsum[i:xrle.n] / xcumsum[xrle.n]
+  locdf <- approx(xrle$values[1:(i-1)], locdf, xout=xall, yleft=0, yright=1)$y
+  hicdf <- approx(xrle$values[i:xrle.n], hicdf, xout=xall, yleft=0, yright=1)$y
+  dlo[i] <- max(bgcdf - locdf)
+  dhi[i] <- max(locdf - hicdf)
+}
+
+
+tbl <- bind_cols(x=xall, dlo=dlo, dhi=dhi)
+ggplot(tbl) + 
+  geom_point(aes(x, dlo)) +
+  geom_line(aes(x, dlo)) +
+  geom_point(aes(x, dhi), color="red") +
+  geom_line(aes(x, dhi), color="red") +
+  scale_x_log10()
+
+
+i <- 500
+locdf <- xcumsum[1:(i-1)] / xcumsum[(i-1)]
+hicdf <- (xcumsum[i:xrle.n] - xcumsum[(i-1)]) / (xcumsum[xrle.n] - xcumsum[(i-1)])
+locdf <- approx(xrle$values[1:(i-1)], locdf, xout=xall, yleft=0, yright=1)$y
+hicdf <- approx(xrle$values[i:xrle.n], hicdf, xout=xall, yleft=0, yright=1)$y
+
+tbl <- bind_cols(x=xall, bgcdf=bgcdf, locdf=locdf, hicdf=hicdf)
+ggplot(tbl) +
+  geom_point(aes(x, bgcdf)) +
+  geom_line(aes(x, bgcdf)) +
+  geom_point(aes(x, locdf), color="red") +
+  geom_line(aes(x, locdf), color="red") +
+  geom_point(aes(x, hicdf), color="blue") +
+  geom_line(aes(x, hicdf), color="blue") +
+  scale_x_log10()
+
+ggplot(tbl) +
+  geom_line(aes(x, bgcdf - locdf), color="red") +
+  geom_line(aes(x, locdf - hicdf), color="blue") +
+  geom_line(aes(x, (bgcdf - locdf) + (locdf - hicdf))) +
+  scale_x_log10()
+
+
+
+
+x <- log2(x1)
+
+rle(xsort)
+min(xsort)
+?rle
+
+# choose starting index
+#max(which(xsort < quantile(xbg, 0.5)))
+istart <- minclustsize
+iend <- length(xsort) - minclustsize
+dmin <- NULL
+dmax <- NULL
+j <- 1
+for (i in istart:iend) {
+  xlo <- xsort[1:(i-1)]
+  xhi <- xsort[i:length(xsort)]
+  
+  dmin[j] <- suppressWarnings(ks.test(xbg, xlo, alternative="greater")$statistic)
+  dmax[j] <- suppressWarnings(ks.test(c(xbg, xlo), xhi, alternative="greater")$statistic)
+  j <- j + 1
+  
+  if (j %% 100 == 0) {
+    print(j)
+  }
+}
+
+
+ks.test(c(2000, 234098, 23490, 213), c(1,2,3,4,5,6,7,8,9,10))
+
+
+tbl <- bind_cols(dmin=dmin, dmax=dmax)
+ggplot(tbl) + 
+  geom_line(aes(x=1:length(dmin), y=dmin)) +
+  geom_line(aes(x=1:length(dmax), y=dmax), color="red") +
+  geom_line(aes(x=1:length(dmax), y=dmax - dmin), color="blue")
+
+
+
+
+
+
+
+
+
+xmin <- min(x)
+xmax <- max(x)
+n <- 10000
+bw.adjust <- 3
+bw <- bw.nrd(x) * bw.adjust
+
+d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
+dbg <- density(x[bg], bw=bw, from=xmin, to=xmax, n=n)
+
+dcdf <- cumsum(d$y) / (sum(d$y))
+dbgcdf <- cumsum(dbg$y) / (sum(dbg$y))
+
+
+
+
+
+dbgcdf <- pmax(dbgcdf, dcdf)
+
+dfdr <- (1-dbgcdf) / (1-dcdf)
+dfdr[which(is.nan(dfdr))] <- min(dfdr[which(!is.nan(dfdr))])
+dfdr <- pmin(1, dfdr + fdr.min)
+
+scaled_fdr <- xmin + (xmax - xmin) * cumsum(dfdr) / n
+scaled_fdr <- pmin(d$x, scaled_fdr)
+noise <- approx(d$x, scaled_fdr, xout=x)$y
+noise <- pmin(noise, x)
+
+
+```
+
+
+## Explore bg distribution using LR / filter
+
+```{r bgcorrect lr filter}
+library(mixtools)
+library(fitdistrplus)
+library(stats4)
+library(MASS)
+# for other necessary test or graphical tools
+library(survival)
+library(actuar)
+library(distrMod)
+
+bg <- ds$meta$bg
+x <- ds$counts
+
+sort(ds$samples$bg_auc)[1:20]
+sort(ds$samples$bg_auc, decreasing=TRUE)[1:50]
+s <- "s05_r049_fullroi"
+x1 <- unlist(x[,s])
+
+x <- log2(x1)
+
+
+npEM(x, 2, bg)
+
+?spEM
+
+plotdist(x[bg], histo=TRUE, demp=TRUE)
+
+descdist(x, discrete=FALSE, boot=1000)
+
+f <- fitdist(x[bg], "logis")
+f <- fitdist(x, "lnorm")
+plot(f, breaks=100)
+summary(f)
+
+nbinom.f<- fitdist(cyber.data$event.count, "nbinom") 
+
+?fitdist
+
+
+
+```
 
 
 ## Explore likelihood ratio transform

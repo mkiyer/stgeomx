@@ -383,49 +383,69 @@ background_subtract <- function(x, offset=0, min.count=1) {
   x
 }
 
-
-bgcorrect_norm <- function(x, bg, log=TRUE) {
-  if (log) {
-    x <- log2(x)
-  }
+#'
+#' background correction
+#'
+#' assumes normally distributed background (negative probes)
+#' and gene probes
+#'
+#' @param x matrix of counts
+#' @param bg vector of TRUE/FALSE corresponding to rows of x
+#' @returns matrix of background-subtracted counts
+#'
+bgcorrect_norm <- function(x, bg) {
   a <- sd(x[bg])^2 / sd(x[!bg])^2
   c <- a * mean(x[!bg]) - mean(x[bg])
   y <- (1-a)*x + c
-  if (log) {
-    y <- 2^y
-  }
+  return(y)
+}
+
+#'
+#' background correction using geometric mean/sd
+#'
+#' assumes lognormal distribution
+#'
+#' @param x matrix of counts
+#' @param bg vector of TRUE/FALSE corresponding to rows of x
+#' @returns matrix of background-subtracted counts
+#'
+bgcorrect_geonorm <- function(x, bg) {
+  logx <- log(x)
+  xbg.gm <- exp(mean(logx[bg]))
+  xbg.gsd <- exp(sd(logx[bg]))
+  xbg.gcv <- sqrt(exp(sd(logx[bg])^2) - 1)
+
+  x.gm <- exp(mean(logx[!bg]))
+  x.gsd <- exp(sd(logx[!bg]))
+  x.gcv <- sqrt(exp(sd(logx[!bg])^2) - 1)
+
+  a <- xbg.gcv / x.gcv
+  c <- a * x.gm - xbg.gm
+  y <- (1 - a)*x + c
   return(y)
 }
 
 
-bgcorrect_kde <- function(x, bg, bw.adjust=1) {
+bgcorrect_kdefdr <- function(x, bg, bw.adjust=1) {
   x <- log2(x)
   xmin <- min(x)
   xmax <- max(x)
   n <- 10000
-  epsbg <- 1e-15
   eps <- 1e-10
 
-  bw <- bw.nrd0(x[!bg]) * bw.adjust
-  bwbg <- bw.nrd0(x[bg]) * bw.adjust
+  bw <- bw.nrd(x) * bw.adjust
 
   d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
-  dbg <- density(x[bg], bw=bwbg, from=xmin, to=xmax, n=n)
+  dcdf <- cumsum(d$y) / sum(d$y)
 
-  # LR
-  lr <- (dbg$y + epsbg) / (d$y + eps)
-  # LR cannot be >1
-  lr <- pmin(lr, 1)
-  # LR to the left of median of noise distribution equals 1
-  lr[(d$x <= median(x[bg]))] <- 1
+  dbg <- density(x[bg], bw=bw, from=xmin, to=xmax, n=n)
+  dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
+  dbgcdf <- pmax(dbgcdf, dcdf)
 
-  # scale LR to count values of x
-  scaled_lr <- xmin + (xmax - xmin) * cumsum(lr) / n
-  # linear interpolation to estimate noise component for each value of x
-  noise <- approx(d$x, scaled_lr, xout=x)$y
-  # noise can't be greater than original vector
+  dfdr <- (1-dbgcdf) / (1-dcdf+eps)
+  scaled_fdr <- xmin + (xmax - xmin) * cumsum(dfdr) / n
+  noise <- approx(d$x, scaled_fdr, xout=x)$y
   noise <- pmin(noise, x)
-  # perform background subtraction
   y <- 2^x - 2^noise + 1
 
   return(list(
@@ -433,46 +453,62 @@ bgcorrect_kde <- function(x, bg, bw.adjust=1) {
     dx = d$x,
     dy = d$y,
     dbg = dbg$y,
-    lr = lr,
-    scaled_lr = scaled_lr,
+    dcdf = dcdf,
+    dbgcdf = dbgcdf,
+    scaled_fdr = scaled_fdr,
     bw = bw,
-    bwbg = bwbg,
-    eps = eps,
-    epsbg = epsbg
+    eps = eps
   ))
 }
 
 
-bgcorrect_wfpr <- function(x, bg, bw.adjust=2, w=2) {
+bgcorrect_kdefdr2 <- function(x, bg, bw.adjust=1, fdr.min=0.01) {
   x <- log2(x)
   xmin <- min(x)
   xmax <- max(x)
   n <- 10000
-  eps <- 1e-10
+  bw <- bw.nrd(x) * bw.adjust
 
-  bwbg <- bw.nrd0(x[bg]) * bw.adjust
-  dbg <- density(x[bg], bw=bwbg, from=xmin, to=xmax, n=n)
-  dfpr <- 1 - (cumsum(dbg$y + eps) / sum(dbg$y + eps))
-  dwfpr <- pmin(1, w * fpr)
-  scaled_wfpr <- xmin + (xmax - xmin) * cumsum(dwfpr) / n
+  # model bg distribution
+  fitbg <- MASS::fitdistr(x[bg], "logistic")
+  bg.location <- fitbg$estimate["location"]
+  bg.scale <- fitbg$estimate["scale"]
+  xbg <- rlogis(length(x[!bg]), location=bg.location, scale=bg.scale)
 
-  noise <- approx(dbg$x, scaled_wfpr, xout=x)$y
-  # noise can't be greater than original vector
+  d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
+  #dbg <- density(x[bg], bw=bw, from=xmin, to=xmax, n=n)
+  dbg <- density(xbg, bw=bw, from=xmin, to=xmax, n=n)
+
+  dcdf <- cumsum(d$y) / (sum(d$y))
+  dbgcdf <- cumsum(dbg$y) / (sum(dbg$y))
+  dbgcdf <- pmax(dbgcdf, dcdf)
+
+  dfdr <- (1-dbgcdf) / (1-dcdf)
+  dfdr[which(is.nan(dfdr))] <- min(dfdr[which(!is.nan(dfdr))])
+  dfdr <- pmin(1, dfdr + fdr.min)
+
+  scaled_fdr <- xmin + (xmax - xmin) * cumsum(dfdr) / n
+  scaled_fdr <- pmin(d$x, scaled_fdr)
+  noise <- approx(d$x, scaled_fdr, xout=x)$y
   noise <- pmin(noise, x)
-  # perform background subtraction
-  #y <- 2^(x - noise)
-  y <- 2^x - 2^noise + 1
+
+  y <- 2^(x - noise)
+  #y <- 2^x - 2^noise + 1
 
   return(list(
     y = y,
-    dx = dbg$x,
-    dy = dbg$y,
-    dwfpr = dwfpr,
-    scaled_wfpr = scaled_wfpr,
-    bwbg = bwbg,
-    eps = eps
+    dx = d$x,
+    dy = d$y,
+    dbg = dbg$y,
+    dcdf = dcdf,
+    dbgcdf = dbgcdf,
+    scaled_fdr = scaled_fdr,
+    bw = bw,
+    fdr.min = fdr.min
   ))
+
 }
+
 
 
 #'
@@ -481,31 +517,42 @@ bgcorrect_wfpr <- function(x, bg, bw.adjust=2, w=2) {
 #' @param ds list dataset
 #' @returns matrix of background corrected counts-per-million
 #' @export
-st_geomx_bgcorrect <- function(ds, method=c("norm", "kde", "wfpr"), bw.adjust=2, w=2) {
+st_geomx_bgcorrect <- function(ds, method=c("norm", "geonorm", "bgsub", "kdefdr"),
+                               bw.adjust=3, fdr.min=0.05) {
   bg <- ds$meta$bg
   x <- ds$counts
 
   apply_bgcorrect_norm <- function(x) {
-    return(bgcorrect_norm(x, bg))
+    y <- bgcorrect_norm(x, bg)
+    y <- pmax(y, 1)
+    return(y)
   }
-  apply_bgcorrect_kde <- function(x) {
-    return(bgcorrect_kde(x, bg, bw.adjust=bw.adjust)$y)
+  apply_bgcorrect_geonorm <- function(x) {
+    y <- bgcorrect_geonorm(x, bg)
+    y <- pmax(y, 1)
+    return(y)
   }
-  apply_bgcorrect_wfpr <- function(x) {
-    return(bgcorrect_wfpr(x, bg, bw.adjust=bw.adjust, w=w)$y)
+  apply_bgcorrect_bgsub <- function(x) {
+    y <- pmax(1, x - geomean(x[bg]))
+    return(y)
+  }
+  apply_bgcorrect_kdefdr <- function(x) {
+    y <- bgcorrect_kdefdr2(x, bg, bw.adjust=bw.adjust, fdr.min=fdr.min)$y
+    y <- pmax(1, y)
+    return(y)
   }
 
   if (method == "norm") {
     x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_norm)
-  } else if (method == "kde") {
-    x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_kde)
-  } else if (method == "wfpr") {
-    x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_wfpr)
+  } else if (method == "geonorm") {
+    x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_geonorm)
+  } else if (method == "bgsub") {
+    x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_bgsub)
+  } else if (method == "kdefdr") {
+    x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_kdefdr)
   } else {
     stop("method not found")
   }
-
-  x <- apply(x, 2, pmax, 1)
   return(x)
 }
 
@@ -579,5 +626,3 @@ st_geomx_normalize <- function(ds, x, method=c("qn", "rle", "cpm")) {
   rownames(x) <- ds$meta$gene
   return(x)
 }
-
-
