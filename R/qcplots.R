@@ -95,7 +95,7 @@ st_geomx_plot_gene_filter <- function(ds, min_frac_expr=0) {
   # threshold vs false positive rate
   x <- pROC::coords(myroc, x="all", input="threshold", ret=c("threshold", "fpr", transpose = FALSE))
   p2 <- ggplot(x, aes(x=threshold, y=fpr)) +
-    geom_line(size=1, alpha=0.5, color="blue") +
+    geom_line(linewidth=1, alpha=0.5, color="blue") +
     geom_vline(xintercept = min_frac_expr, linetype="dashed", color="red") +
     geom_hline(yintercept = mystats$fpr, linetype="dashed", color="red") +
     #annotate("text", label=label_fpr, x=min_frac_expr, y=mystats$fpr, hjust=0, vjust=-0.25) +

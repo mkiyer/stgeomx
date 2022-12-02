@@ -49,7 +49,9 @@ working_dir <- "/Users/mkiyer/Library/CloudStorage/OneDrive-DukeUniversity/resea
 # input directories
 geomx_dir <- file.path(working_dir, "geomx")
 # geomx data
-geomx_xlsx <- file.path(geomx_dir, "pja_ipmn2_wta_2022-11-14.xlsx")
+geomx_xlsx <- file.path(geomx_dir, "pja_ipmn2_wta_2022-12-02.xlsx")
+# sample annotation file
+geomx_annot_xlsx <- file.path(geomx_dir, "annotations_2022-12-02.xlsx")
 
 # qc parameters
 geomx_negprobe_lod_quantile = 0.9
@@ -85,14 +87,22 @@ ds <- st_geomx_process_input(ds, geomx_negprobe_lod_quantile)
 ds <- st_geomx_merge_probes(ds)
 ds <- st_geomx_rm_empty_aois(ds)
 
-colnames(ds$samples)
-ggplot(ds$samples, aes(x=bg_geomean, y=count_q3, color=segment)) +
-  geom_point(alpha=0.8) + 
-  #scale_color_viridis_c() +
-  scale_x_log10() +
-  scale_y_log10() + 
-  theme_minimal()
+# read and join sample annotation
+annot <- read_excel(geomx_annot_xlsx)
 
+ds$samples <- ds$samples %>% 
+  inner_join(annot, by="SegmentDisplayName")
+
+table(ds$samples$path)
+table(ds$samples$class)
+
+# colnames(ds$samples)
+# ggplot(ds$samples, aes(x=bg_geomean, y=count_q3, color=segment)) +
+#   geom_point(alpha=0.8) + 
+#   #scale_color_viridis_c() +
+#   scale_x_log10() +
+#   scale_y_log10() + 
+#   theme_minimal()
 
 ```
 
@@ -198,7 +208,7 @@ normcounts <- y_bg_qn
 ```{r qc normalization}
 
 # sample annotations to use in plots
-s <- select(fds$samples, aoi, slide, keep)
+s <- select(fds$samples, aoi, slide, keep, path, class)
 x <- bind_cols(fds$meta, normcounts)
 x <- x %>%
   pivot_longer(s$aoi, names_to="aoi", values_to="count") %>%
@@ -226,6 +236,29 @@ f <- file.path(plot_dir, "qc_ridge_plot_norm_aoi.pdf")
 ggsave(f, plot=p, device="pdf", width = 8, height = 8)
 
 
+# by path
+p <- x %>%
+  ggplot(aes(x=count, y=factor(path), fill=factor(path))) +
+  stat_density_ridges(alpha=0.7, scale=3, rel_min_height=0.001, quantile_lines=TRUE) + 
+  scale_color_manual(values = pals::cols25()) + 
+  scale_x_log10() +
+  theme_ridges() + 
+  theme(axis.text = element_text(size=5))
+p
+f <- file.path(plot_dir, "qc_ridge_plot_norm_path.pdf")
+ggsave(f, plot=p, device="pdf", width = 8, height = 8)
+
+# by class
+p <- x %>%
+  ggplot(aes(x=count, y=factor(path), fill=factor(class))) +
+  stat_density_ridges(alpha=0.7, scale=3, rel_min_height=0.001, quantile_lines=TRUE) + 
+  scale_color_manual(values = pals::cols25()) + 
+  scale_x_log10() +
+  theme_ridges() + 
+  theme(axis.text = element_text(size=5))
+p
+f <- file.path(plot_dir, "qc_ridge_plot_norm_class.pdf")
+ggsave(f, plot=p, device="pdf", width = 8, height = 8)
 
 
 ```
@@ -251,7 +284,7 @@ run_pca <- function(x) {
 }
 
 y <- log2(normcounts)
-y <- most_cv_genes(y, 5000)
+y <- most_cv_genes(y, 2000)
 
 pca_res <- run_pca(y)
 pca_tbl <- bind_cols(fds$samples, as_tibble(pca_res$pca$x))
@@ -266,6 +299,19 @@ p1 <- p + geom_point(aes(color=bg_auc), alpha = 0.8, size=2) +
   scale_color_viridis_c()
 p1
 ggsave(file.path(plot_dir, "pca_bg_auc.pdf"), plot=p1, device="pdf")
+
+# segment
+p1 <- p + geom_point(aes(color=segment), alpha = 0.8, size=2) +
+  scale_color_manual(values = pals::cols25())
+p1
+ggsave(file.path(plot_dir, "pca_segment.pdf"), plot=p1, device="pdf")
+
+# segment / path
+p1 <- p + geom_point(aes(color=path), alpha = 0.8, size=2) +
+  scale_color_manual(values = pals::cols25())
+p1
+ggsave(file.path(plot_dir, "pca_path_segment.pdf"), plot=p1, device="pdf")
+
 
 
 # investigate contributions to pca
@@ -295,6 +341,16 @@ p <- ggplot(umap_df, aes(x=umap1, y=umap2)) +
 
 p1 <- p + geom_point(aes(color=bg_auc), alpha = 0.8, size=2) +
   scale_color_viridis_c()
+p1
+
+# segment
+p1 <- p + geom_point(aes(color=segment), alpha = 0.8, size=2) +
+  scale_color_manual(values = pals::cols25())
+p1
+
+# segment / path
+p1 <- p + geom_point(aes(color=path, shape=class), alpha = 0.8, size=2) +
+  scale_color_manual(values = pals::cols25())
 p1
 
 
@@ -388,7 +444,8 @@ plot_de_volcano <- function(res) {
   #                         log2fc > 0 ~ "up"))
   p <- ggplot(res, aes(x=log2fc, y=-log10(padj), color=de, size=de)) +
     geom_point(alpha=0.7) +
-    geom_text_repel(data=subset(res, de != "no"), color="black", size=3, aes(label=gene), max.overlaps=Inf) +
+#    geom_text_repel(data=subset(res, de != "no"), color="black", size=3, aes(label=gene), max.overlaps=Inf) +
+    geom_text_repel(data=subset(res, de != "no"), color="black", size=3, aes(label=gene)) +
     scale_color_manual(values=c("no"="grey", "dn"="blue", "up"="red")) +
     scale_size_manual(values=c("no"=1, "dn"=2, "up"=2)) +
     theme_minimal() +
@@ -400,6 +457,194 @@ plot_de_volcano <- function(res) {
 
 
 ```
+
+
+## DE analysis: pathology
+
+```{r between de analysis pathology}
+
+s <- fds$samples %>% filter(segment == "panck")
+s$path <- factor(tolower(s$path), levels=c("panck_nmld", "panck_lgd", "panck_hgd", "panck_inv"))
+y <- log2(normcounts)[,s$aoi]
+
+# de analysis
+de <- NULL
+method <- "limma_trend"
+
+design <- stats::model.matrix(~0 + slide + path, data=s)
+colnames(design)
+colnames(design) <- levels(s$path)
+contrasts <- limma::makeContrasts(lgd_vs_nl = panck_lgd - panck_nmld,
+                                  hgd_vs_nl = panck_hgd - panck_nmld,
+                                  inv_vs_nl = panck_inv - panck_nmld,
+                                  hgd_vs_lgd = panck_hgd - panck_lgd,
+                                  inv_vs_lgd = panck_inv - panck_lgd,
+                                  inv_vs_hgd = panck_inv - panck_hgd,
+                                  invhgd_vs_lgdnl = (panck_inv + panck_hgd)/2 - (panck_lgd + panck_nmld)/2,
+                                  levels=design)
+fit <- run_limma_trend(y, design, contrasts)
+res <- process_limma(fit, contrasts, method, de_padj_cutoff, de_log2fc_cutoff) 
+de <- bind_rows(de, res)
+
+
+model.matrix(~slide, data=s)
+
+# 
+# # design
+# on_icb_response <- s$time == "t1" & s$response == "yes"
+# on_icb_no_response <- s$time == "t1" & s$response == "no"
+# design <- model.matrix(~patient, data=s)
+# design_response <- cbind(design, on_icb_no_response, on_icb_response)
+# 
+# y <- log2(g_qn_cpm + log2_prior_count)
+# y <- get_filtered_subset(norm_expr_mat[, s$library], 
+#                          min.expr = de_min_log2_cpm, 
+#                          min.prop = de_min_prop)
+# print(nrow(y))
+# res <- run_limma_trend(y, design_response, "on_icb_response", 
+#                        de_padj_cutoff, de_log2fc_cutoff,
+#                        analysis, method)
+# de <- bind_rows(de, res)
+
+write_xlsx(de, file.path(working_dir, "de_path.xlsx"))
+
+
+
+res %>% filter(gene == "LAMB3")
+res %>% filter(analysis == "hgd_vs_lgd") %>% arrange(padj)
+table(res$analysis, (res$de == "up") & (res$padj < 1e-3))
+
+
+write_xlsx(de)
+
+plot_de_volcano(res) +
+  facet_wrap(~ analysis)
+  
+p
+
+
+  labs(title = "Acral vs. Non-Acral")
+p
+ggsave(file.path(plot_dir, "de_volcano_acral.pdf"), p)
+
+
+# Survival 3yr
+analysis <- "os_3yr"
+s$os_3yr <- factor(ifelse(s$os_quartile < 1, "under3yrs", "over3yrs"), levels=c("over3yrs", "under3yrs"))
+
+design <- stats::model.matrix(~ 0 + os_3yr, data=s)
+colnames(design) <- levels(s$os_3yr)
+contrasts <- limma::makeContrasts(os3yr = under3yrs - over3yrs,
+                                  levels=design)
+
+fit <- run_limma_trend(y, design, contrasts)
+res <- process_limma(fit, contrasts, method, de_padj_cutoff, de_log2fc_cutoff) 
+de <- bind_rows(de, res)
+p <- plot_de_volcano(res) + ggtitle("OS <3yr vs >3yr")
+p
+
+
+# Survival 5yr
+analysis <- "os_5yr"
+s$os_5yr <- factor(ifelse(s$os_quartile < 2, "under5yrs", "over5yrs"), levels=c("over5yrs", "under5yrs"))
+
+design <- stats::model.matrix(~ 0 + os_5yr, data=s)
+colnames(design) <- levels(s$os_5yr)
+contrasts <- limma::makeContrasts(os5yr = under5yrs - over5yrs,
+                                  levels=design)
+
+fit <- run_limma_trend(y, design, contrasts)
+res <- process_limma(fit, contrasts, method, de_padj_cutoff, de_log2fc_cutoff) 
+de <- bind_rows(de, res)
+p <- plot_de_volcano(res) + ggtitle("OS <5yr vs >5yr")
+p
+
+
+
+# Survival 9 yr
+analysis <- "os_9yr"
+s$os_9yr <- factor(ifelse(s$os_quartile < 3, "under9yrs", "over9yrs"), levels=c("over9yrs", "under9yrs"))
+
+design <- stats::model.matrix(~ 0 + os_9yr, data=s)
+colnames(design) <- levels(s$os_9yr)
+contrasts <- limma::makeContrasts(os9yr = under9yrs - over9yrs,
+                                  levels=design)
+fit <- run_limma_trend(y, design, contrasts)
+res <- process_limma(fit, contrasts, method, de_padj_cutoff, de_log2fc_cutoff) 
+de <- bind_rows(de, res)
+p <- plot_de_volcano(res) + ggtitle("OS <9yr vs >9yr")
+p
+ggsave(file.path(plot_dir, "de_volcano_os9yr.pdf"), p)
+
+
+
+# Survival q0 vs q3
+table(s$os_quartile)
+
+s$os_quartile <- factor(s$os_quartile)
+design <- stats::model.matrix(~ 0 + os_quartile, data=s)
+contrasts <- limma::makeContrasts(os_q0_vs_q3 = os_quartile0 - os_quartile3,
+                                  levels=design)
+fit <- run_limma_trend(y, design, contrasts)
+res <- process_limma(fit, contrasts, method, de_padj_cutoff, de_log2fc_cutoff) 
+
+de <- bind_rows(de, res)
+table(res$analysis)
+p <- plot_de_volcano(res) + ggtitle("OS <3yr vs >9yr")
+p
+ggsave(file.path(plot_dir, "de_volcano_os_q0_vs_q3.pdf"), p)
+
+
+de %>% filter(analysis == "acral") %>% arrange(padj)
+de %>% filter(padj < 0.05)
+
+de %>% filter(gene == "EPHA4")
+# de %>% arrange(desc(avgexpr), desc(log2fc)) %>% distinct(gene, .keep_all=TRUE)
+# de %>% filter(gene == "LZTR1")
+
+# write gene expression data
+#write_xlsx(de_merged,
+#           file.path(working_dir, 'de_results.xlsx'))
+
+```
+
+## plot individual genes
+
+```{r plot genes}
+
+plot_gene <- function(s, x, gene, aes_x, aes_color) {
+  exprs <- unlist(x[gene, ])
+  x <- s %>% add_column(gene = exprs)
+  p <- ggplot(x, aes(x={{ aes_x }}, y=gene, fill={{aes_color}})) +
+    geom_boxplot(outlier.shape = NA, width=0.5) +
+    geom_point(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.5)) +
+    scale_fill_manual(values=pals::cols25()) +
+    ggtitle(paste0("Gene: ", gene)) +
+    theme_minimal() + 
+    theme(axis.text.x = element_text(color = "black", angle = 90, vjust = 0.5, hjust=1)) +
+    theme(axis.line = element_line(color = "black"))
+  return(p)
+}
+
+
+de %>% filter(gene == "PMM1")
+p <- plot_gene(s, y, "PMM1", acral, acral)
+p
+
+p <- plot_gene(s, y, "PI15", os_quartile, os_quartile)
+p
+ggsave(file.path(plot_dir, "gene_afap1l2_os.pdf"), p)
+
+
+plot_gene(s, y, "ATP5MC3", os_quartile, os_quartile)
+de %>% filter(padj < 0.05)
+
+
+```
+
+
+
+
 
 
 
@@ -440,7 +685,6 @@ for (s in ds$samples$aoi) {
   xs <- unlist(x[,s])
   res <- bgcorrect_kdefdr2(xs, bg, bw.adjust=1, fdr.min=0.05)$y
 }
-
 
 
 
