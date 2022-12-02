@@ -56,7 +56,7 @@ geomx_negprobe_lod_quantile = 0.9
 geomx_min_counts = 1e5
 geomx_min_auc = 0.65
 geomx_aoi_min_frac_expr = 0.2
-geomx_gene_min_frac_expr = 0.2
+geomx_gene_min_frac_expr = 0.1
 
 # normalization
 norm_method = "qn"
@@ -85,9 +85,10 @@ ds <- st_geomx_process_input(ds, geomx_negprobe_lod_quantile)
 ds <- st_geomx_merge_probes(ds)
 ds <- st_geomx_rm_empty_aois(ds)
 
-ggplot(ds$samples, aes(x=bg_max, y=count_max, color=bg_auc)) +
+colnames(ds$samples)
+ggplot(ds$samples, aes(x=bg_geomean, y=count_q3, color=segment)) +
   geom_point(alpha=0.8) + 
-  scale_color_viridis_c() +
+  #scale_color_viridis_c() +
   scale_x_log10() +
   scale_y_log10() + 
   theme_minimal()
@@ -122,6 +123,14 @@ p <- st_geomx_plot_aoi_filter(ds, geomx_min_counts, geomx_min_auc, geomx_aoi_min
 p
 ggsave(file.path(plot_dir, "qc_aoi_filter.pdf"), p)
 
+colnames(ds$samples)
+ggplot(ds$samples) + 
+  geom_point(aes(num_counts, bg_auc, color=bg_cpm)) +
+  scale_x_log10() +
+  scale_color_viridis_c() +
+  facet_wrap(~ segment, scales="free")
+
+# table(ds$samples$keep, ds$samples$segment)
 
 ```
 
@@ -142,27 +151,11 @@ ggsave(file.path(plot_dir, "qc_gene_filtering_fpr_auc.pdf"), p)
 summary(ds$samples$bg_geomean)
 summary(apply(ds$counts, 2, max))
 
-x <- cpm(ds$counts)
+x <- cpm(st_geomx_bgcorrect(ds, method="kdefdr", bw.adjust=1, fdr.min=0.05))
 p <- st_geomx_plot_bgcorrect(ds, x)
 p
-f <- file.path(plot_dir, "qc_bgcorrect_none.pdf")
-ggsave(f, plot=p, device="pdf", width=8, height=12)
-
 p <- st_geomx_plot_bgcorrect_density(ds, x)
 p
-f <- file.path(plot_dir, "qc_bgcorrect_none_density.pdf")
-ggsave(f, plot=p, device="pdf", width=8, height=12)
-
-x <- cpm(st_geomx_bgcorrect(ds, method="kde"))
-p <- st_geomx_plot_bgcorrect(ds, x)
-p
-f <- file.path(plot_dir, "qc_bgcorrect_norm.pdf")
-ggsave(f, plot=p, device="pdf", width=8, height=12)
-
-p <- st_geomx_plot_bgcorrect_density(ds, x)
-p
-f <- file.path(plot_dir, "qc_bgcorrect_norm_density.pdf")
-ggsave(f, plot=p, device="pdf", width=8, height=12)
 
 
 ```
@@ -182,13 +175,16 @@ fds <- list(samples = ds$samples,
 # apply filters
 fds <- st_geomx_filter(fds)
 
+# bg correct
+#x <- fds$counts
+#x <- st_geomx_bgcorrect(fds, method="bgsub")
+#x <- st_geomx_bgcorrect(fds, method="norm")
+x <- st_geomx_bgcorrect(fds, method="kdefdr", bw.adjust=2, fdr.min=0.05)
+
 # normalize
-y_bg_rle <- st_geomx_normalize(fds, bgcorrect=TRUE, method="rle")
-y_bg_qn <- st_geomx_normalize(fds, bgcorrect=TRUE, method="qn")
-y_bg_cpm <- st_geomx_normalize(fds, bgcorrect=TRUE, method="cpm")
-y_rle <- st_geomx_normalize(fds, bgcorrect=FALSE, method="rle")
-y_qn <- st_geomx_normalize(fds, bgcorrect=FALSE, method="qn")
-y_cpm <- st_geomx_normalize(fds, bgcorrect=FALSE, method="cpm")
+y_bg_rle <- st_geomx_normalize(fds, x, method="rle")
+y_bg_qn <- st_geomx_normalize(fds, x, method="qn")
+y_bg_cpm <- st_geomx_normalize(fds, x, method="cpm")
 
 # choose normalized data to work with
 normcounts <- y_bg_qn
@@ -407,114 +403,45 @@ plot_de_volcano <- function(res) {
 
 
 
-## Density approx BG correction
+## BG correction exploration
 
-```{r bg correction using kernel density}
+```{r bg correction exploration}
 
 bg <- ds$meta$bg
 x <- ds$counts
 
-bw.adjust = 3
-sort(ds$samples$bg_auc)[1:10]
+sort(ds$samples$bg_auc)[1:20]
 sort(ds$samples$bg_auc, decreasing=TRUE)[1:10]
-s <- "s08_r011_panck"
-x1 <- unlist(x[,s])
+s <- "s04_r005_cd45"
+xs <- unlist(x[,s])
 
-#ks.test(x=sample(x1, size=sum(bg), replace=FALSE), y=x1[bg], alternative="less")
-ks.test(x=x1, y=x1[bg], alternative="less")
-# 
-# x <- log2(x1)
-# xmin <- min(x)
-# xmax <- max(x)
-# n <- 10000
-# epsbg <- 1e-15
-# eps <- 1e-10
-# 
-# bw <- bw.nrd0(x[!bg]) * bw.adjust
-# bwbg <- bw.nrd0(x[bg]) * bw.adjust
-# 
-# d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
-# dbg <- density(x[bg], bw=bwbg, from=xmin, to=xmax, n=n)
-# 
-# # LR
-# lr <- (dbg$y + epsbg) / (d$y + eps)
-# # LR cannot be >1
-# lr <- pmin(lr, 1)
-# # LR to the left of median of noise distribution equals 1
-# lr[(d$x <= median(x[bg]))] <- 1
-# 
-# # scale LR to count values of x
-# scaled_lr <- xmin + (xmax - xmin) * cumsum(lr) / n
-# # linear interpolation to estimate noise component for each value of x
-# noise <- approx(d$x, scaled_lr, xout=x)$y
-# # noise can't be greater than original vector
-# noise <- pmin(noise, x)
-# # perform background subtraction
-# y <- 2^x - 2^noise + 1
-# 
-# 
-# tbl <- bind_cols(dx=d$x, 
-#                  dy=d$y, 
-#                  dbg=dbg$y, 
-#                  lr=lr)
-# ggplot(tbl) +
-#   geom_line(aes(dx, dy)) +
-#   geom_line(aes(dx, dbg), color="red") +
-#   geom_line(aes(dx, lr), color="blue")
+xs <- log2(xs)
+res <- cluster_noise(xs, bg)
 
-
-
-res <- bgcorrect_kde(x1, bg, bw.adjust=bw.adjust)
-reskde <- pmax(1, res$y)
-resnorm <- pmax(1, bgcorrect_norm(x1, bg))
-resbgsub <- pmax(1, x1 - geomean(x1[bg]))
-
-summary(res$y)
-summary(resnorm)
-
-range(res$y)
-range(resnorm)
-range(resbgsub)
-
-tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
-                 bind_cols(value = reskde, bgcorrect="kde", bg=bg),
-                 bind_cols(value = resnorm, bgcorrect="norm", bg=bg),
-                 bind_cols(value = resbgsub, bgcorrect="bgsub", bg=bg))
-ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
-  stat_density_ridges(alpha=0.5, bandwidth=res$bw) +
-  scale_fill_manual(values = pals::cols25()) + 
-  scale_x_log10()
-
-tbl <- bind_cols(dx=res$dx, 
-                 dy=res$dy, 
-                 dbg=res$dbg, 
-                 lr=res$lr)
-ggplot(tbl) +
-  geom_line(aes(dx, dy)) +
-  geom_line(aes(dx, dbg), color="red") +
-  geom_line(aes(dx, lr), color="blue")
+tbl <- bind_cols(x=res$x,
+                 bg=res$bg_dist,
+                 hi=res$hi_dist,
+                 tot=res$bg_dist + res$hi_dist)
 
 ggplot(tbl) +
-  geom_line(aes(dx, -log10(dy+res$eps))) +
-  geom_line(aes(dx, -log10(dbg+res$epsbg)), color="red") +
-  geom_line(aes(dx, -log10(lr)), color="blue")
-
-tbl <- bind_rows(bind_cols(value = x1, bgcorrect="before", bg=bg),
-                 bind_cols(value = res$y, bgcorrect="after", bg=bg))
-
-ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
-  stat_density_ridges(alpha=0.5, bandwidth=res$bw) +
-  scale_fill_manual(values = pals::cols25()) + 
-  scale_x_log10()
+  geom_point(aes(x,bg), color="red", alpha=0.5) +
+  geom_point(aes(x,hi), color="blue", alpha=0.5) +
+  geom_point(aes(x,tot)) +
+  geom_vline(xintercept=res$bg_center, linetype="dashed", color="red") +
+  geom_vline(xintercept=res$hi_center, linetype="dashed", color="blue") +
+  geom_vline(xintercept=res$cutoff, linetype="dashed")
 
 
-tbl <- bind_cols(x1=x1, y1=resnorm, bg=bg)
-ggplot(tbl) + 
-  geom_point(data=filter(tbl, bg), aes(x1, y1), size=3, alpha=0.7, color="red") +
-  geom_line(data=filter(tbl, !bg), aes(x1, y1), color="black") +
-  geom_hline(yintercept = mean(tbl$y1[bg]), color="red", linetype="dashed") +
-  geom_vline(xintercept = mean(tbl$x1[bg]), color="red", linetype="dashed") + 
-  scale_x_log10() + 
-  scale_y_log10()
+res <- bgcorrect_kdefdr2(xs, bg, bw.adjust=1, fdr.min=0.05)$y
+
+
+for (s in ds$samples$aoi) {
+  print(s)
+  xs <- unlist(x[,s])
+  res <- bgcorrect_kdefdr2(xs, bg, bw.adjust=1, fdr.min=0.05)$y
+}
+
+
+
 
 ```
