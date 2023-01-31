@@ -51,11 +51,11 @@ geomx_dir <- file.path(working_dir, "geomx")
 # geomx data
 geomx_xlsx <- file.path(geomx_dir, "pja_ipmn2_wta_2022-12-02.xlsx")
 # sample annotation file
-geomx_annot_xlsx <- file.path(geomx_dir, "annotations_2022-12-02.xlsx")
+geomx_annot_xlsx <- file.path(geomx_dir, "pja_ipmn2_annotations_2022-12-07.xlsx")
 
 # qc parameters
 geomx_negprobe_lod_quantile = 0.9
-geomx_min_counts = 1e5
+geomx_min_counts = 50000
 geomx_min_auc = 0.65
 geomx_aoi_min_frac_expr = 0.2
 geomx_gene_min_frac_expr = 0.1
@@ -94,15 +94,10 @@ ds$samples <- ds$samples %>%
   inner_join(annot, by="SegmentDisplayName")
 
 table(ds$samples$path)
-table(ds$samples$class)
-
-# colnames(ds$samples)
-# ggplot(ds$samples, aes(x=bg_geomean, y=count_q3, color=segment)) +
-#   geom_point(alpha=0.8) + 
-#   #scale_color_viridis_c() +
-#   scale_x_log10() +
-#   scale_y_log10() + 
-#   theme_minimal()
+table(ds$samples$path_specimen)
+table(ds$samples$path_aoi)
+table(ds$samples$subset)
+table(ds$samples$segment)
 
 ```
 
@@ -161,7 +156,7 @@ ggsave(file.path(plot_dir, "qc_gene_filtering_fpr_auc.pdf"), p)
 summary(ds$samples$bg_geomean)
 summary(apply(ds$counts, 2, max))
 
-x <- cpm(st_geomx_bgcorrect(ds, method="kdefdr", bw.adjust=1, fdr.min=0.05))
+x <- cpm(st_geomx_bgcorrect(ds, method="kdefdr", bw.adjust=5, fdr.min=0.05))
 p <- st_geomx_plot_bgcorrect(ds, x)
 p
 p <- st_geomx_plot_bgcorrect_density(ds, x)
@@ -189,7 +184,7 @@ fds <- st_geomx_filter(fds)
 #x <- fds$counts
 #x <- st_geomx_bgcorrect(fds, method="bgsub")
 #x <- st_geomx_bgcorrect(fds, method="norm")
-x <- st_geomx_bgcorrect(fds, method="kdefdr", bw.adjust=2, fdr.min=0.05)
+x <- st_geomx_bgcorrect(fds, method="kdefdr", bw.adjust=5, fdr.min=0.05)
 
 # normalize
 y_bg_rle <- st_geomx_normalize(fds, x, method="rle")
@@ -208,7 +203,7 @@ normcounts <- y_bg_qn
 ```{r qc normalization}
 
 # sample annotations to use in plots
-s <- select(fds$samples, aoi, slide, keep, path, class)
+s <- select(fds$samples, aoi, slide, keep, path_aoi, path_specimen)
 x <- bind_cols(fds$meta, normcounts)
 x <- x %>%
   pivot_longer(s$aoi, names_to="aoi", values_to="count") %>%
@@ -236,9 +231,9 @@ f <- file.path(plot_dir, "qc_ridge_plot_norm_aoi.pdf")
 ggsave(f, plot=p, device="pdf", width = 8, height = 8)
 
 
-# by path
+# by aoi path
 p <- x %>%
-  ggplot(aes(x=count, y=factor(path), fill=factor(path))) +
+  ggplot(aes(x=count, y=factor(path_aoi), fill=factor(path_aoi))) +
   stat_density_ridges(alpha=0.7, scale=3, rel_min_height=0.001, quantile_lines=TRUE) + 
   scale_color_manual(values = pals::cols25()) + 
   scale_x_log10() +
@@ -248,9 +243,9 @@ p
 f <- file.path(plot_dir, "qc_ridge_plot_norm_path.pdf")
 ggsave(f, plot=p, device="pdf", width = 8, height = 8)
 
-# by class
+# by specimen path
 p <- x %>%
-  ggplot(aes(x=count, y=factor(path), fill=factor(class))) +
+  ggplot(aes(x=count, y=factor(path_aoi), fill=factor(path_specimen))) +
   stat_density_ridges(alpha=0.7, scale=3, rel_min_height=0.001, quantile_lines=TRUE) + 
   scale_color_manual(values = pals::cols25()) + 
   scale_x_log10() +
@@ -284,7 +279,7 @@ run_pca <- function(x) {
 }
 
 y <- log2(normcounts)
-y <- most_cv_genes(y, 2000)
+y <- most_cv_genes(y, 1000)
 
 pca_res <- run_pca(y)
 pca_tbl <- bind_cols(fds$samples, as_tibble(pca_res$pca$x))
@@ -306,12 +301,17 @@ p1 <- p + geom_point(aes(color=segment), alpha = 0.8, size=2) +
 p1
 ggsave(file.path(plot_dir, "pca_segment.pdf"), plot=p1, device="pdf")
 
-# segment / path
-p1 <- p + geom_point(aes(color=path), alpha = 0.8, size=2) +
+# slide
+p1 <- p + geom_point(aes(color=slide), alpha = 0.8, size=2) +
+  scale_color_manual(values = pals::cols25())
+p1
+ggsave(file.path(plot_dir, "pca_path_slide.pdf"), plot=p1, device="pdf")
+
+# path
+p1 <- p + geom_point(aes(color=path_aoi, shape=path_specimen), alpha = 0.8, size=2) +
   scale_color_manual(values = pals::cols25())
 p1
 ggsave(file.path(plot_dir, "pca_path_segment.pdf"), plot=p1, device="pdf")
-
 
 
 # investigate contributions to pca
@@ -348,8 +348,13 @@ p1 <- p + geom_point(aes(color=segment), alpha = 0.8, size=2) +
   scale_color_manual(values = pals::cols25())
 p1
 
+# slide
+p1 <- p + geom_point(aes(color=slide), alpha = 0.8, size=2) +
+  scale_color_manual(values = pals::cols25())
+p1
+
 # segment / path
-p1 <- p + geom_point(aes(color=path, shape=class), alpha = 0.8, size=2) +
+p1 <- p + geom_point(aes(color=path_aoi, shape=path_specimen), alpha = 0.8, size=2) +
   scale_color_manual(values = pals::cols25())
 p1
 
@@ -369,6 +374,8 @@ s <- fds$samples %>% mutate(noise_quantile = ntile(desc(bg_auc), 4))
 
 annot_col <- column_to_rownames(s, "aoi") %>% 
   select(slide = slide,
+         path_aoi = path_aoi,
+         path_specimen = path_specimen,
          noise_quantile = noise_quantile) %>%
   as.data.frame()
 
@@ -459,12 +466,14 @@ plot_de_volcano <- function(res) {
 ```
 
 
-## DE analysis: pathology
+## DE analysis: epithelial compartment, specimens with invasive carcinoma
 
 ```{r between de analysis pathology}
 
-s <- fds$samples %>% filter(segment == "panck")
-s$path <- factor(tolower(s$path), levels=c("panck_nmld", "panck_lgd", "panck_hgd", "panck_inv"))
+table(fds$samples$path_aoi, fds$samples$slide)
+
+s <- fds$samples %>% filter(path_specimen == "inv", segment == "panck")
+s$path <- factor(tolower(s$path_aoi), levels=c("nl", "lgd", "hgd", "inv"))
 y <- log2(normcounts)[,s$aoi]
 
 # de analysis
@@ -473,7 +482,13 @@ method <- "limma_trend"
 
 design <- stats::model.matrix(~0 + slide + path, data=s)
 colnames(design)
+
+table(s$slide, s$path)
+
+
+
 colnames(design) <- levels(s$path)
+s$path
 contrasts <- limma::makeContrasts(lgd_vs_nl = panck_lgd - panck_nmld,
                                   hgd_vs_nl = panck_hgd - panck_nmld,
                                   inv_vs_nl = panck_inv - panck_nmld,
@@ -657,10 +672,44 @@ x <- ds$counts
 
 sort(ds$samples$bg_auc)[1:20]
 sort(ds$samples$bg_auc, decreasing=TRUE)[1:10]
-s <- "s04_r005_cd45"
+s <- "s08_r010_panck"
 xs <- unlist(x[,s])
 
-xs <- log2(xs)
+bw.adjust <- 5
+
+x <- log2(xs)
+xmin <- min(x)
+xmax <- max(x)
+
+n <- 10000
+bw <- bw.nrd0(x) * bw.adjust
+eps <- 1e-10
+
+dbg <- density(x[bg], bw=bw, from=xmin, to=xmax, n=n)
+
+?quantile
+
+
+#d <- density(x[!noise], bw=bw, from=xmin, to=xmax, n=n)
+
+dcdf <- cumsum(d$y) / sum(d$y)
+dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
+dbgcdf <- pmax(dbgcdf, dcdf)
+
+dfdr <- (1-dbgcdf) / (1-dcdf+eps)
+dfdr <- pmin(1, dfdr + fdr.min)
+scaled_fdr <- xmin + (xmax - xmin) * cumsum(dfdr) / n
+scaled_fdr <- pmin(d$x, scaled_fdr)
+xnoise <- approx(d$x, scaled_fdr, xout=x)$y
+xnoise <- pmin(xnoise, x)
+y <- 2^x - 2^xnoise + 1
+
+#dfdr <- (1-dbgcdf) / (1-dcdf)
+#dfdr[which(is.nan(dfdr))] <- min(dfdr[which(!is.nan(dfdr))])
+#dfdr <- pmin(1, dfdr + fdr.min)
+
+
+
 res <- cluster_noise(xs, bg)
 
 tbl <- bind_cols(x=res$x,

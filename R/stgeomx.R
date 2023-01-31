@@ -396,12 +396,19 @@ cluster_noise <- function(x, bg) {
   noise <- (x < cutoff)
   fpr <- sum(x[bg] > cutoff)/length(x[bg])
 
+  # test average instead of sum
+  bg_dists2 <- bg_dists / (1:length(xgene))
+  hi_dists2 <- hi_dists / (length(xgene) - 1:length(xgene))
+  #tot_dists2 <- bg_dists2 + hi_dists2
+
   return(list(noise=noise,
               x=xgene,
               bg_center=bg_center,
               hi_center=hi_center,
               bg_dist=bg_dists,
               hi_dist=hi_dists,
+              bg_dist2=bg_dists2,
+              hi_dist2=hi_dists2,
               fpr=fpr,
               cutoff=cutoff))
 }
@@ -436,6 +443,51 @@ bgcorrect_norm <- function(x, bg) {
   c <- a * mean(x[!bg]) - mean(x[bg])
   y <- (1-a)*x + c
   return(y)
+}
+
+
+#'
+#' background correction using quantile-quantile approach
+#'
+#' @param x matrix of counts
+#' @param bg vector of TRUE/FALSE corresponding to rows of x
+#' @returns list where element 'y' contains corrected counts
+#'
+bgcorrect_qq <- function(x, bg, bw.adjust=1) {
+  log2x <- log2(x)
+  n <- 10000
+
+  d <- density(log2x[!bg], adjust=bw.adjust, n=n)
+  dcdf <- cumsum(d$y) / sum(d$y)
+  #dfun <- splinefun(d$x, dcdf, ties="ordered", method="monoH.FC")
+  dfun <- approxfun(d$x, dcdf, ties="ordered")
+
+  dbg <- density(log2x[bg], adjust=bw.adjust, n=n)
+  dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
+  #dbgfun <- splinefun(dbgcdf, dbg$x, ties="ordered", method="monoH.FC")
+  dbgfun <- approxfun(dbgcdf, dbg$x, ties="ordered")
+
+  log2noise <- dbgfun(dfun(log2x))
+  noise <- log2noise^2
+  # ensure noise is not greater than (x - 1)
+  noise <- pmin(noise, x - 1)
+  y <- x - noise
+  y <- y - (min(y) - 1)
+  # ensure isotonic behavior
+  ir <- isoreg(x, y)
+  yf <- ir$yf[order(ir$ord)]
+
+  res <- list(
+    y = yf,
+    noise = noise,
+    dx = d$x,
+    dy = d$y,
+    dcdf = dcdf,
+    dbgx = dbg$x,
+    dbgy = dbg$y,
+    dbgcdf = dbgcdf,
+    bw.adjust = bw.adjust
+  )
 }
 
 
@@ -506,8 +558,9 @@ bgcorrect_kdefdr2 <- function(x, bg, bw.adjust=1, fdr.min=0.01) {
   bw <- bw.nrd0(x) * bw.adjust
   eps <- 1e-10
 
-  res <- cluster_noise(x, bg)
-  noise <- bg | res$noise
+  #res <- cluster_noise(x, bg)
+  noise <- bg
+  #noise <- bg | res$noise
 
   d <- density(x[!noise], bw=bw, from=xmin, to=xmax, n=n)
   dbg <- density(x[noise], bw=bw, from=xmin, to=xmax, n=n)
@@ -549,13 +602,17 @@ bgcorrect_kdefdr2 <- function(x, bg, bw.adjust=1, fdr.min=0.01) {
 #' @param ds list dataset
 #' @returns matrix of background corrected counts-per-million
 #' @export
-st_geomx_bgcorrect <- function(ds, method=c("norm", "bgsub", "kdefdr"),
+st_geomx_bgcorrect <- function(ds, method=c("qq", "norm", "bgsub", "kdefdr"),
                                bw.adjust=1, fdr.min=0.05) {
   bg <- ds$meta$bg
   x <- ds$counts
 
+  apply_bgcorrect_qq <- function(x) {
+    y <- bgcorrect_qq(x, bg, bw.adjust=bw.adjust)$y
+    return(y)
+  }
   apply_bgcorrect_norm <- function(x) {
-    y <- bgcorrect_norm2(x, bg)
+    y <- bgcorrect_norm(x, bg)
     y <- pmax(y, 1)
     return(y)
   }
@@ -569,10 +626,10 @@ st_geomx_bgcorrect <- function(ds, method=c("norm", "bgsub", "kdefdr"),
     return(y)
   }
 
-  if (method == "norm") {
+  if (method == "qq") {
+    x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_qq)
+  } else if (method == "norm") {
     x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_norm)
-  } else if (method == "geonorm") {
-    x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_geonorm)
   } else if (method == "bgsub") {
     x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_bgsub)
   } else if (method == "kdefdr") {

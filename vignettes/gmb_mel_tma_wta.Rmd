@@ -266,22 +266,49 @@ p
 f <- file.path(plot_dir, "qc_bgcorrect_none_density.pdf")
 ggsave(f, plot=p, device="pdf", width=8, height=12)
 
-x <- cpm(st_geomx_bgcorrect(ds, method="norm"))
+
+x <- cpm(st_geomx_bgcorrect(ds, method="qq", bw.adjust=2))
 p <- st_geomx_plot_bgcorrect(ds, x)
 p
-f <- file.path(plot_dir, "qc_bgcorrect_norm.pdf")
+f <- file.path(plot_dir, "qc_bgcorrect_qq.pdf")
 ggsave(f, plot=p, device="pdf", width=8, height=12)
 
 p <- st_geomx_plot_bgcorrect_density(ds, x)
 p
-f <- file.path(plot_dir, "qc_bgcorrect_norm_density.pdf")
+f <- file.path(plot_dir, "qc_bgcorrect_q_density.pdf")
 ggsave(f, plot=p, device="pdf", width=8, height=12)
 
-x <- cpm(st_geomx_bgcorrect(ds, method="kdefdr", bw.adjust=1, fdr.min=0.05))
+
+x <- cpm(st_geomx_bgcorrect(ds, method="bgsub"))
 p <- st_geomx_plot_bgcorrect(ds, x)
 p
+f <- file.path(plot_dir, "qc_bgcorrect_bgsub.pdf")
+ggsave(f, plot=p, device="pdf", width=8, height=12)
+
 p <- st_geomx_plot_bgcorrect_density(ds, x)
 p
+f <- file.path(plot_dir, "qc_bgcorrect_bgsub_density.pdf")
+ggsave(f, plot=p, device="pdf", width=8, height=12)
+
+
+
+# 
+# x <- cpm(st_geomx_bgcorrect(ds, method="norm"))
+# p <- st_geomx_plot_bgcorrect(ds, x)
+# p
+# f <- file.path(plot_dir, "qc_bgcorrect_norm.pdf")
+# ggsave(f, plot=p, device="pdf", width=8, height=12)
+# 
+# p <- st_geomx_plot_bgcorrect_density(ds, x)
+# p
+# f <- file.path(plot_dir, "qc_bgcorrect_norm_density.pdf")
+# ggsave(f, plot=p, device="pdf", width=8, height=12)
+# 
+# x <- cpm(st_geomx_bgcorrect(ds, method="kdefdr", bw.adjust=5, fdr.min=0.05))
+# p <- st_geomx_plot_bgcorrect(ds, x)
+# p
+# p <- st_geomx_plot_bgcorrect_density(ds, x)
+# p
 
   
 ```
@@ -310,8 +337,8 @@ fds <- st_geomx_filter(fds)
 # bg correct
 #x <- fds$counts
 #x <- st_geomx_bgcorrect(fds, method="bgsub")
-x <- st_geomx_bgcorrect(fds, method="norm")
-#x <- st_geomx_bgcorrect(fds, method="kdefdr", bw.adjust=2, fdr.min=0.05)
+#x <- st_geomx_bgcorrect(fds, method="norm")
+x <- st_geomx_bgcorrect(fds, method="kdefdr", bw.adjust=5, fdr.min=0.05)
 
 # normalize
 y_bg_rle <- st_geomx_normalize(fds, x, method="rle")
@@ -334,29 +361,29 @@ pct_var <- pca_res$sdev^2 / sum(pca_res$sdev^2)
 pct_var_lbl <- round(100 * pct_var, 2)
 pct_var_lbl <- paste(colnames(pca_res$x), " (", paste(as.character(pct_var_lbl), "%", ")", sep=""), sep="")
 
-score <- (abs(cor(pca_tbl$PC1, pca_tbl$bg_cpm)) * pct_var[1] +
-            abs(cor(pca_tbl$PC2, pca_tbl$bg_cpm)) * pct_var[2] +
-            abs(cor(pca_tbl$PC3, pca_tbl$bg_cpm)) * pct_var[3] +
-            abs(cor(pca_tbl$PC4, pca_tbl$bg_cpm)) * pct_var[4])
+score <- (abs(cor(pca_tbl$PC1, pca_tbl$bg_ks_dist)) * pct_var[1] +
+            abs(cor(pca_tbl$PC2, pca_tbl$bg_ks_dist)) * pct_var[2] +
+            abs(cor(pca_tbl$PC3, pca_tbl$bg_ks_dist)) * pct_var[3] +
+            abs(cor(pca_tbl$PC4, pca_tbl$bg_ks_dist)) * pct_var[4])
 score
 
-ggplot(pca_tbl, aes(bg_cpm, PC1)) + 
+ggplot(pca_tbl, aes(bg_ks_dist, PC1)) + 
   geom_point() + 
   geom_smooth(method='lm', formula= y~x) +
-  labs(y=pct_var_lbl[1], title=cor.test(pca_tbl$PC1, pca_tbl$bg_cpm)$estimate)
-ggplot(pca_tbl, aes(bg_cpm, PC2)) + 
+  labs(y=pct_var_lbl[1], title=cor.test(pca_tbl$PC1, pca_tbl$bg_ks_dist)$estimate)
+ggplot(pca_tbl, aes(bg_ks_dist, PC2)) + 
   geom_point() + 
   geom_smooth(method='lm', formula= y~x) +
-  labs(y=pct_var_lbl[2], title=cor.test(pca_tbl$PC2, pca_tbl$bg_cpm)$estimate)
-ggplot(pca_tbl, aes(bg_cpm, PC3)) + 
+  labs(y=pct_var_lbl[2], title=cor.test(pca_tbl$PC2, pca_tbl$bg_ks_dist)$estimate)
+ggplot(pca_tbl, aes(bg_ks_dist, PC3)) + 
   geom_point() + 
   geom_smooth(method='lm', formula= y~x) +
-  labs(y=pct_var_lbl[3], title=cor.test(pca_tbl$PC3, pca_tbl$bg_cpm)$estimate)
+  labs(y=pct_var_lbl[3], title=cor.test(pca_tbl$PC3, pca_tbl$bg_ks_dist)$estimate)
 
 p <- ggplot(pca_tbl, aes(x=PC1, y=PC2)) +
   theme_minimal() +
   labs(x=pct_var_lbl[1], y=pct_var_lbl[2], title=100*score) +
-  geom_point(aes(color=bg_cpm), alpha = 0.8, size=2) +
+  geom_point(aes(color=bg_ks_dist), alpha = 0.8, size=2) +
   scale_color_viridis_c()
 p
 
@@ -1053,48 +1080,235 @@ x <- ds$counts
 
 sort(ds$samples$bg_auc)[1:20]
 sort(ds$samples$bg_auc, decreasing=TRUE)[1:10]
-s <- "s04_r064_fullroi"
+s <- "s02_r013_fullroi"
 xs <- unlist(x[,s])
 
+bw.adjust <- 2
 
-
-ks.test(x=sample(xs, size=sum(bg), replace=FALSE), y=xs[bg], alternative="less")
-
-reskdefdr <- bgcorrect_kdefdr2(xs, bg, bw.adjust=1, fdr.min=0.05)$y
+reskdefdr <- bgcorrect_kdefdr2(xs, bg, bw.adjust=bw.adjust, fdr.min=0.05)$y
 resnorm <- pmax(1, bgcorrect_norm(xs, bg))
-resnorm2 <- pmax(1, bgcorrect_norm2(xs, bg))
 resbgsub <- pmax(1, xs - geomean(xs[bg]))
+resqq <- bgcorrect_qq(xs, bg, bw.adjust=bw.adjust)$y
 
 summary(reskdefdr)
 summary(resnorm)
-summary(resnorm2)
 summary(resbgsub)
+summary(resqq)
 
 
 tbl <- bind_rows(bind_cols(value = xs, bgcorrect="before", bg=bg),
                  bind_cols(value = resnorm, bgcorrect="norm", bg=bg),
-                 bind_cols(value = resnorm2, bgcorrect="norm2", bg=bg),
-                 bind_cols(value = resbgsub, bgcorrect="bgsub", bg=bg),
-                 bind_cols(value = reskdefdr, bgcorrect="kdefdr", bg=bg))
+                 bind_cols(value = resbgsub, bgcorrect="norm2", bg=bg),
+                 bind_cols(value = reskdefdr, bgcorrect="bgsub", bg=bg),
+                 bind_cols(value = resqq, bgcorrect="qq", bg=bg))
 ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
   stat_density_ridges(alpha=0.5) +
   scale_fill_manual(values = pals::cols25()) + 
   scale_x_log10()
 
-tbl <- bind_cols(xs=xs, ynorm=resnorm, ynorm2=resnorm2, yfdr=reskdefdr, bg=bg)
+tbl <- bind_cols(xs=xs, ynorm=resnorm, yfdr=reskdefdr, yqq=resqq, bg=bg)
 ggplot(tbl) + 
   geom_point(data=filter(tbl, bg), aes(xs, ynorm), size=3, alpha=0.5, color="blue") +
   geom_line(data=filter(tbl, !bg), aes(xs, ynorm), color="blue") +
-  geom_point(data=filter(tbl, bg), aes(xs, ynorm2), size=3, alpha=0.5, color="red") +
-  geom_line(data=filter(tbl, !bg), aes(xs, ynorm2), color="red") +
-  geom_point(data=filter(tbl, bg), aes(xs, yfdr), size=3, alpha=0.5, color="green") +
-  geom_line(data=filter(tbl, !bg), aes(xs, yfdr), color="green") +
+  geom_point(data=filter(tbl, bg), aes(xs, yfdr), size=3, alpha=0.5, color="red") +
+  geom_line(data=filter(tbl, !bg), aes(xs, yfdr), color="red") +
+  geom_point(data=filter(tbl, bg), aes(xs, yqq), size=3, alpha=0.5, color="green") +
+  geom_line(data=filter(tbl, !bg), aes(xs, yqq), color="green") +
 #  geom_hline(yintercept = mean(tbl$y1[bg]), color="red", linetype="dashed") +
 #  geom_vline(xintercept = mean(tbl$x1[bg]), color="red", linetype="dashed") + 
   scale_x_log10() + 
   scale_y_log10()
 
 ```
+
+## quantile-quantile bg correction
+```{r qqbgcorrect}
+
+bg <- ds$meta$bg
+x <- ds$counts
+
+sort(ds$samples$bg_auc)[1:20]
+sort(ds$samples$bg_auc, decreasing=TRUE)[1:50]
+s <- "s04_r029_fullroi"
+xs <- unlist(x[,s])
+
+res <- bgcorrect_qq(xs, bg, bw.adjust = 2)
+tbl <- bind_cols(x=log2(xs), noise=log2(res$noise), y=log2(res$y))
+
+ggplot(tbl) +
+  geom_line(aes(x, x), color="green") +
+  geom_line(aes(x, noise)) +
+  geom_line(aes(x, y), color="red")
+
+
+
+```
+
+
+
+## BG correction version 3 (kdefdr3)
+
+```{r bgcorrect kdefdr3}
+
+bg <- ds$meta$bg
+x <- ds$counts
+
+sort(ds$samples$bg_auc)[1:20]
+sort(ds$samples$bg_auc, decreasing=TRUE)[1:50]
+s <- "s06_r048_fullroi"
+x <- unlist(x[,s])
+
+# parameters
+bg.quantile <- 0.9
+bw.adjust <- 1
+eps <- 1e-10
+fdr.min <- 0.0
+n <- 2^13
+
+# determine expressed/not expressed probes
+bg.cutoff <- quantile(x[bg], bg.quantile)
+table(bg, x < bg.cutoff)
+noise <- bg | (x < bg.cutoff)
+
+x <- log2(x)
+xmin <- min(x)
+xmax <- max(x)
+
+d <- density(x[!noise], adjust=bw.adjust, from=xmin, to=xmax, n=n)
+dbg <- density(x[noise], adjust=bw.adjust, from=xmin, to=xmax, n=n)
+
+dcdf <- cumsum(d$y) / sum(d$y)
+dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
+#pnoise <- dbgcdf / (dcdf + dbgcdf)
+pnoise <- d$y / (d$y + dbg$y + eps)
+
+# ensure isotonic behavior
+ir <- isoreg(d$x, pnoise)
+#yf <- ir$yf[order(ir$ord)]
+yf <- ir$yf
+
+
+tbl <- bind_cols(x=d$x,
+                 d=d$y,
+                 dbg=dbg$y,
+                 dcdf=dcdf,
+                 dbgcdf=dbgcdf,
+                 pnoise=pnoise,
+                 yf=yf)
+
+ggplot(tbl) +
+  geom_line(aes(x,d)) +
+  geom_line(aes(x,dbg), color="red")
+
+ggplot(tbl) +
+  geom_line(aes(x,d)) +
+  geom_line(aes(x,dbg), color="red") +
+  geom_line(aes(x,pnoise), color="blue") + 
+  geom_line(aes(x,yf), color="magenta")
+
+
+
+#dbgcdf <- pmax(dbgcdf, dcdf)
+
+  
+d <- density(x[!noise], adjust=bw.adjust, n=n)
+dcdf <- cumsum(d$y) / sum(d$y)
+#dfun <- splinefun(d$x, dcdf, ties="ordered", method="monoH.FC")
+dfun <- approxfun(d$x, dcdf, ties="ordered")
+
+
+dbg <- density(log2x[bg], adjust=bw.adjust, n=n)
+dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
+#dbgfun <- splinefun(dbgcdf, dbg$x, ties="ordered", method="monoH.FC")
+dbgfun <- approxfun(dbgcdf, dbg$x, ties="ordered")
+
+log2noise <- dbgfun(dfun(log2x))
+noise <- log2noise^2
+# ensure noise is not greater than (x - 1)
+noise <- pmin(noise, x - 1)
+y <- x - noise
+y <- y - (min(y) - 1)
+# ensure isotonic behavior
+ir <- isoreg(x, y)
+yf <- ir$yf[order(ir$ord)]
+
+res <- list(
+  y = yf,
+  noise = noise,
+  dx = d$x,
+  dy = d$y,
+  dcdf = dcdf,
+  dbgx = dbg$x,
+  dbgy = dbg$y,
+  dbgcdf = dbgcdf,
+  bw.adjust = bw.adjust
+)
+
+x <- log2(xs)
+xmin <- min(x)
+xmax <- max(x)
+n <- 2^13
+eps <- 1e-10
+bw.adjust=5
+fdr.min <- 0.0
+
+bw <- bw.nrd(x) * bw.adjust
+
+d <- density(x[!noise], bw=bw, from=xmin, to=xmax, n=n)
+dcdf <- cumsum(d$y) / sum(d$y)
+
+dbg <- density(x[noise], bw=bw, from=xmin, to=xmax, n=n)
+dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
+dbgcdf <- pmax(dbgcdf, dcdf)
+
+dfdr <- (1-dbgcdf) / (1-dcdf+eps)
+dfdr <- pmin(1, dfdr + fdr.min)
+scaled_fdr <- xmin + (xmax - xmin) * cumsum(dfdr) / n
+scaled_fdr <- pmin(d$x, scaled_fdr)
+xnoise <- approx(d$x, scaled_fdr, xout=x)$y
+xnoise <- pmin(xnoise, x)
+y <- 2^x - 2^xnoise + 1
+
+
+tbl <- bind_cols(dx = d$x,
+                 dy = d$y,
+                 dbg = dbg$y,
+                 dbgcdf = dbgcdf,
+                 dfdr = dfdr,
+                 scaled_fdr = scaled_fdr)
+
+ggplot(tbl) +
+  geom_line(aes(dx, dy)) +
+  geom_line(aes(dx, dbg), color="red")
+
+ggplot(tbl) +
+  geom_line(aes(dx, dfdr), alpha=0.5, color="blue") +
+  geom_line(aes(dx, dcdf)) +
+  geom_line(aes(dx, dbgcdf), color="red")
+
+ggplot(tbl) +
+  geom_line(aes(dx, scaled_fdr))
+
+tbl <- bind_cols(x=xs, y=y, xnoise=2^xnoise, bg=bg, noise=noise)
+ggplot(tbl) + 
+  geom_point(data=filter(tbl, noise), aes(x, y), size=3, alpha=0.5, color="red") +
+  geom_point(data=filter(tbl, !noise), aes(x, y), size=1, alpha=0.3) +
+  geom_line(data=filter(tbl, !noise), aes(x, y), alpha=0.5) +
+  geom_line(aes(x, xnoise), color="blue") +
+  geom_hline(yintercept = mean(tbl$y[bg]), color="red", linetype="dashed") +
+  geom_vline(xintercept = mean(tbl$x[bg]), color="red", linetype="dashed") + 
+  scale_x_log10() +
+  scale_y_log10()
+
+
+approx(d$x, dbg$y, xout=mean(x))
+approx(d$x, d$y, xout=mean(x))
+approx(d$x, dfdr, xout=mean(x))
+
+
+
+```
+
 
 ## Explore bg distribution using fdr
 
@@ -1108,10 +1322,12 @@ sort(ds$samples$bg_auc, decreasing=TRUE)[1:50]
 s <- "s02_r013_fullroi"
 xs <- unlist(x[,s])
 
-res <- cluster_noise(xs, bg)
+res <- cluster_noise(log2(xs), bg)
 tbl <- bind_cols(x=res$x,
                  bg=res$bg_dist,
+                 bg2=res$bg_dist2,
                  hi=res$hi_dist,
+                 hi2=res$hi_dist2,
                  tot=res$bg_dist + res$hi_dist)
 
 ggplot(tbl) +
@@ -1134,8 +1350,8 @@ xmin <- min(x)
 xmax <- max(x)
 n <- 10000
 eps <- 1e-10
-bw.adjust=1
-fdr.min <- 0.05
+bw.adjust=5
+fdr.min <- 0.0
 
 bw <- bw.nrd(x) * bw.adjust
 
@@ -1197,6 +1413,9 @@ approx(d$x, dfdr, xout=mean(x))
 ## explore clustering with kmeans / sum of squares
 
 ```{r clustering kmeans}
+
+
+
 
 cluster_noise <- function(x, bg, scale="log2") {
   
@@ -1502,13 +1721,6 @@ ggplot(tbl) +
   geom_line(aes(x=1:length(dmax), y=dmax - dmin), color="blue")
 
 
-
-
-
-
-
-
-
 xmin <- min(x)
 xmax <- max(x)
 n <- 10000
@@ -1577,8 +1789,7 @@ summary(f)
 
 ```{r test bg correction}
 
-x <- st_geomx_bgcorrect(ds, method="kde")
-
+x <- st_geomx_bgcorrect(ds, method="qq")
 
 bg <- ds$meta$bg
 #s <- "s03_r030_fullroi"
