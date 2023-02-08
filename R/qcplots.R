@@ -116,6 +116,154 @@ st_geomx_plot_gene_filter <- function(ds, min_frac_expr=0) {
 
 
 #'
+#' boxplot showing distribution of count values
+#'
+#' @import ggplot2
+#'
+#' @param list dataset
+#' @param tibble x expr matrix
+#' @param ymax.quantile number between 0 and 1
+#' @returns ggplot object
+#' @export
+st_geomx_plot_dist_boxplot <- function(ds, x, ymax.quantile=0.999) {
+  s <- select(ds$samples, aoi, slide, keep)
+  y <- bind_cols(ds$meta, x)
+  y <- y %>%
+    pivot_longer(s$aoi, names_to="aoi", values_to="value") %>%
+    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi")) %>%
+    arrange(slide)
+  ymax <- quantile(y$value, ymax.quantile)
+
+  p <- ggplot(y, aes(x=aoi, y=value, color=slide, fill=slide)) +
+    geom_boxplot(middle=NA, outlier.shape=NA, alpha=0.5) +
+    stat_summary(fun=mean, geom="point") +
+    coord_cartesian(ylim=c(1, ymax)) +
+    scale_y_continuous(trans="log10") +
+    scale_color_manual(values = pals::cols25()) +
+    scale_fill_manual(values = pals::cols25()) +
+    theme_minimal() +
+    theme(axis.text.x = element_blank(),
+          panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank())
+  return(p)
+}
+
+
+#'
+#' qc plots to assess relationship of bg versus gene
+#'
+#' @import ggplot2
+#' @import patchwork
+#'
+#' @param list dataset
+#' @param tibble x expr matrix
+#' @param quantiles vector of quantiles [0.0-1.0]
+#' @returns ggplot object
+#' @export
+st_geomx_plot_bg_dotplot <- function(ds, x, quantiles=c(0.05, 0.10, 0.25, 0.5, 0.75, 0.90, 0.95)) {
+  # convert quantiles to string names
+  quant_names <- paste0("q", round(100 * quantiles))
+
+  # setup
+  s <- select(ds$samples, aoi, slide, keep, bg_auc)
+  bg <- ds$meta$bg
+
+  # compute quantiles for bg and gene
+  qbg <- summarise(x[bg,],
+                   across(everything(), ~ quantile(.x, quantiles)))
+  qbg <- bind_cols(qbg, bg="bg", q=quant_names)
+  #rownames(qbg) <- quant_names
+
+  qgene <- summarise(x[!bg,],
+                     across(everything(), ~ quantile(.x, quantiles)))
+  qgene <- bind_cols(qgene, bg="gene", q=quant_names)
+  #rownames(qgene) <- quant_names
+
+  # combine bg and gene quantiles
+  q <- bind_rows(qbg, qgene) %>%
+    pivot_longer(colnames(x), names_to="aoi", values_to="value") %>%
+    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
+
+  gg_dotplot_gene_vs_bg_quantiles <- function(color_by) {
+    p <- ggplot(q, aes(x=value, y=reorder(aoi, bg_auc), shape=q, color={{color_by}})) +
+      geom_point(alpha=0.5) +
+      scale_x_log10() +
+      theme_minimal() +
+      theme(axis.text.y = element_blank(),
+            panel.grid.major.y = element_blank(),
+            panel.grid.minor.y = element_blank()) +
+      labs(x="value", y="aoi") +
+      facet_wrap(~ bg, nrow=2)
+    return(p)
+  }
+
+  p1 <- gg_dotplot_gene_vs_bg_quantiles(q) +
+    scale_color_manual(values = pals::cols25())
+  p2 <- gg_dotplot_gene_vs_bg_quantiles(keep) +
+    scale_color_manual(values = pals::cols25())
+  p3 <- gg_dotplot_gene_vs_bg_quantiles(bg_auc) +
+    scale_color_viridis_c()
+  p <- p1 + p2 + p3
+  return(p)
+}
+
+#'
+#' qc plots to assess relationship of bg versus gene
+#'
+#' @import ggplot2
+#' @import patchwork
+#'
+#' @param list dataset
+#' @param tibble x expr matrix
+#' @param quantiles vector of quantiles [0.0-1.0]
+#' @returns ggplot object
+#' @export
+st_geomx_plot_bg_scatter <- function(ds, x, quantiles=c(0.05, 0.10, 0.25, 0.5, 0.75, 0.90, 0.95)) {
+  # convert quantiles to string names
+  quant_names <- paste0("q", round(100 * quantiles))
+
+  # setup
+  s <- select(ds$samples, aoi, slide, keep, bg_auc)
+  bg <- ds$meta$bg
+
+  # compute quantiles for bg and gene
+  qbg <- summarise(cpm(ds$counts)[bg,], across(everything(), ~ quantile(.x, quantiles)))
+  qbg <- bind_cols(qbg, bg="bg", q=quant_names)
+  rownames(qbg) <- quant_names
+
+  qgene <- summarise(x[!bg,], across(everything(), ~ quantile(.x, quantiles)))
+  qgene <- bind_cols(qgene, bg="gene", q=quant_names)
+  rownames(qgene) <- quant_names
+
+  # pivot to create scatter plots
+  q <- bind_rows(qbg, qgene) %>%
+    pivot_longer(colnames(x), names_to="aoi", values_to="value") %>%
+    pivot_wider(names_from="bg", values_from="value", names_prefix="") %>%
+    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
+
+  gg_scatter_gene_vs_bg_quantiles <- function(color_by) {
+    p <- ggplot(q, aes(x=bg, y=gene, color={{color_by}})) +
+      geom_point(alpha=0.6) +
+      geom_abline(slope = 1, intercept = 0, color="black", linetype="dashed") +
+      geom_smooth(data=filter(q, q == "q50"), method = 'lm', formula = y ~ x, se = FALSE, color="black", linetype="dashed") +
+      scale_x_log10() +
+      scale_y_log10() +
+      theme_minimal()
+    return(p)
+  }
+
+  p1 <- gg_scatter_gene_vs_bg_quantiles(q) +
+    scale_color_manual(values = pals::cols25())
+  p2 <- gg_scatter_gene_vs_bg_quantiles(keep) +
+    scale_color_manual(values = pals::cols25())
+  p3 <- gg_scatter_gene_vs_bg_quantiles(bg_auc) +
+    scale_color_viridis_c()
+  p <- p1 + p2 + p3
+  return(p)
+}
+
+
+#'
 #' qc plots to assess the effect of background subtraction
 #'
 #' @import ggplot2

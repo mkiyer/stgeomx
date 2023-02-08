@@ -59,6 +59,7 @@ geomx_mel_annot_xlsx <- file.path(geomx_dir, "mel_tma_annot_2022_10-25.xlsx")
 # human protein atlas melanoma signatures
 hpa_mel_prog_xlsx <- file.path(data_dir, "hpa_melanoma_prognostic.xlsx")
 
+
 # qc parameters
 geomx_negprobe_lod_quantile = 0.9
 geomx_min_counts = 1e6
@@ -67,6 +68,9 @@ geomx_aoi_min_frac_expr = 0.2
 geomx_gene_min_frac_expr = 0.1
 
 # normalization
+bgcorrect_method = "qq"
+bgcorrect_bw_adjust = 5
+bgcorrect_bg_quant = 0.5
 norm_method = "qn"
 
 # de parameters
@@ -253,66 +257,78 @@ save_pheatmap_pdf(p, filename=f, width=8, height=8)
 
 ## QC: Background correction
 
-```{r background correction}
+```{r background correction, warning=FALSE}
 
-x <- cpm(ds$counts)
-p <- st_geomx_plot_bgcorrect(ds, x)
-p
-f <- file.path(plot_dir, "qc_bgcorrect_none.pdf")
-ggsave(f, plot=p, device="pdf", width=8, height=12)
-
-p <- st_geomx_plot_bgcorrect_density(ds, x)
-p
-f <- file.path(plot_dir, "qc_bgcorrect_none_density.pdf")
-ggsave(f, plot=p, device="pdf", width=8, height=12)
-
-
-x <- cpm(st_geomx_bgcorrect(ds, method="qq", bw.adjust=2))
-p <- st_geomx_plot_bgcorrect(ds, x)
-p
-f <- file.path(plot_dir, "qc_bgcorrect_qq.pdf")
-ggsave(f, plot=p, device="pdf", width=8, height=12)
-
-p <- st_geomx_plot_bgcorrect_density(ds, x)
-p
-f <- file.path(plot_dir, "qc_bgcorrect_q_density.pdf")
-ggsave(f, plot=p, device="pdf", width=8, height=12)
+# params for plot
+quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.99)
+width <- 16
+height <- 6
+  
+# params for bgcorrect
+bw.adjust <- 5
+bg.quant <- 0.5
+ppv.max <- 0.95
 
 
-x <- cpm(st_geomx_bgcorrect(ds, method="bgsub"))
-p <- st_geomx_plot_bgcorrect(ds, x)
-p
-f <- file.path(plot_dir, "qc_bgcorrect_bgsub.pdf")
-ggsave(f, plot=p, device="pdf", width=8, height=12)
+## plots
 
-p <- st_geomx_plot_bgcorrect_density(ds, x)
-p
-f <- file.path(plot_dir, "qc_bgcorrect_bgsub_density.pdf")
-ggsave(f, plot=p, device="pdf", width=8, height=12)
+# raw cpm
+x <- as_tibble(cpm(ds$counts))
+p <- st_geomx_plot_bg_dotplot(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_none_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_none_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
 
+# p <- st_geomx_plot_dist_boxplot(ds, xraw)
+# f <- file.path(plot_dir, "qc_bgcorrect_none_boxplot.pdf")
+# ggsave(f, p, width=width, height=8)
 
+# qq cpm
+x <- st_geomx_bgcorrect(ds, method="qq", bw.adjust=bw.adjust, bg.quant=bg.quant)
+x <- as_tibble(cpm(x))
+p <- st_geomx_plot_bg_dotplot(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_qq_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_qq_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
 
-# 
-# x <- cpm(st_geomx_bgcorrect(ds, method="norm"))
-# p <- st_geomx_plot_bgcorrect(ds, x)
-# p
-# f <- file.path(plot_dir, "qc_bgcorrect_norm.pdf")
-# ggsave(f, plot=p, device="pdf", width=8, height=12)
-# 
-# p <- st_geomx_plot_bgcorrect_density(ds, x)
-# p
-# f <- file.path(plot_dir, "qc_bgcorrect_norm_density.pdf")
-# ggsave(f, plot=p, device="pdf", width=8, height=12)
-# 
-# x <- cpm(st_geomx_bgcorrect(ds, method="kdefdr", bw.adjust=5, fdr.min=0.05))
-# p <- st_geomx_plot_bgcorrect(ds, x)
-# p
-# p <- st_geomx_plot_bgcorrect_density(ds, x)
-# p
+# p <- st_geomx_plot_dist_boxplot(ds, x)
+# f <- file.path(plot_dir, "qc_bgcorrect_qq_boxplot.pdf")
+# ggsave(f, p, width=16, height=8)
+
+# ppv cpm
+x <- st_geomx_bgcorrect(ds, method="kdeppv", bw.adjust=bw.adjust, ppv.max=ppv.max)
+x <- as_tibble(cpm(x))
+p <- st_geomx_plot_bg_dotplot(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_ppv_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_ppv_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# p <- st_geomx_plot_dist_boxplot(ds, x)
+# f <- file.path(plot_dir, "qc_bgcorrect_ppv_boxplot.pdf")
+# ggsave(f, p, width=16, height=8)
+
+# bgsub cpm
+x <- st_geomx_bgcorrect(ds, method="bgsub", bg.quant=bg.quant)
+x <- as_tibble(cpm(x))
+p <- st_geomx_plot_bg_dotplot(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_bgsub_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_bgsub_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# p <- st_geomx_plot_dist_boxplot(ds, x)
+# f <- file.path(plot_dir, "qc_bgcorrect_bgsub_boxplot.pdf")
+# ggsave(f, p, width=16, height=8)
 
   
 ```
-
 
 
 ## Apply filters and normalize
@@ -336,25 +352,51 @@ fds <- st_geomx_filter(fds)
 
 # bg correct
 #x <- fds$counts
+x <- st_geomx_bgcorrect(fds, 
+                        method=bgcorrect_method,
+                        bw.adjust=bgcorrect_bw_adjust, 
+                        bg.quant=bgcorrect_bg_quant)
+#x <- st_geomx_bgcorrect(fds, method="qq")
 #x <- st_geomx_bgcorrect(fds, method="bgsub")
-#x <- st_geomx_bgcorrect(fds, method="norm")
-x <- st_geomx_bgcorrect(fds, method="kdefdr", bw.adjust=5, fdr.min=0.05)
+#x <- st_geomx_bgcorrect(fds, method="kdeppv", bw.adjust=bw.adjust, ppv.max=ppv.max)
 
 # normalize
-y_bg_rle <- st_geomx_normalize(fds, x, method="rle")
+#y_bg_rle <- st_geomx_normalize(fds, x, method="rle")
 y_bg_qn <- st_geomx_normalize(fds, x, method="qn")
-y_bg_cpm <- st_geomx_normalize(fds, x, method="cpm")
+#y_bg_cpm <- st_geomx_normalize(fds, x, method="cpm")
 
 # choose normalized data to work with
 normcounts <- y_bg_qn
+
+
+length(unique(s$aoi))
+length(unique(fds$samples$patient))
+length(unique(fds$samples$aoi))
+table(fds$samples$slide)
+table(fds$samples$sample_type)
+table(fds$samples$acral)
+
+# write gene expression data
+write_xlsx(ds$samples, file.path(working_dir, 'st_mel_roi_annot.xlsx'))
+
+
 
 ```
 
 
 ```{r check normalization}
 
+# bgcorrect plots
+x <- as_tibble(cpm(normcounts))
+p <- st_geomx_plot_bg_dotplot(fds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(fds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# pca
 y <- log2(normcounts)
-#y <- normcounts
 pca_res <- prcomp(t(y), center=TRUE, scale=TRUE)
 pca_tbl <- bind_cols(fds$samples, as_tibble(pca_res$x))
 pct_var <- pca_res$sdev^2 / sum(pca_res$sdev^2)
@@ -493,7 +535,7 @@ run_pca <- function(x) {
 
 
 y <- log2(normcounts)
-y <- most_cv_genes(y, 1000)
+y <- most_cv_genes(y, 5000)
 
 pca_res <- run_pca(y)
 pca_tbl <- bind_cols(fds$samples, as_tibble(pca_res$pca$x))
@@ -578,9 +620,10 @@ p1
 library(pheatmap)
 
 y <- log2(normcounts)
-y <- most_cv_genes(y, 2000)
+y <- most_cv_genes(y, 5000)
 
 s <- fds$samples %>% mutate(noise_quantile = ntile(desc(bg_auc), 4))
+
 
 annot_col <- column_to_rownames(s, "aoi") %>% 
   select(sample_type = sample_type,
@@ -589,6 +632,10 @@ annot_col <- column_to_rownames(s, "aoi") %>%
          slide = slide,
          noise_quantile = noise_quantile) %>%
   as.data.frame()
+
+f <- file.path(plot_dir, "heatmap_cluster_highcv_genes.png")
+width <- 12
+height <- 8
 
 p <- pheatmap(y,
          scale="row",
@@ -600,10 +647,12 @@ p <- pheatmap(y,
          clustering_distance_cols = "correlation",
          breaks = seq(-3, 3, 0.05),
          color = colorRampPalette(c("purple3", "black", "yellow2"))(120),
-         annotation_col = annot_col)
+         annotation_col = annot_col,
+         filename=f, width=width, height=height)
 
 f <- file.path(plot_dir, "heatmap_cluster_highcv_genes.pdf")
-save_pheatmap_pdf(p, filename=f, width=12, height=8)
+save_pheatmap_pdf(p, filename=f, width=width, height=height)
+
 
 
 ```
@@ -678,7 +727,7 @@ plot_de_volcano <- function(res) {
 ```
 
 
-## DE analysis across different patients
+## DE analysis in transit melanoma 
 
 ```{r between patient de analysis}
 
@@ -690,6 +739,7 @@ s <- fds$samples %>%
   slice_head(n=1) %>%
   ungroup()
 y <- log2(normcounts)[,s$aoi]
+
 
 # de analysis
 de <- NULL
@@ -709,6 +759,7 @@ p <- plot_de_volcano(res) +
   labs(title = "Acral vs. Non-Acral")
 p
 ggsave(file.path(plot_dir, "de_volcano_acral.pdf"), p)
+ggsave(file.path(plot_dir, "de_volcano_acral.png"), p)
 
 
 # Survival 3yr
@@ -725,6 +776,8 @@ res <- process_limma(fit, contrasts, method, de_padj_cutoff, de_log2fc_cutoff)
 de <- bind_rows(de, res)
 p <- plot_de_volcano(res) + ggtitle("OS <3yr vs >3yr")
 p
+ggsave(file.path(plot_dir, "de_volcano_os_3yr.png"), p)
+ggsave(file.path(plot_dir, "de_volcano_os_3yr.pdf"), p)
 
 
 # Survival 5yr
@@ -758,6 +811,7 @@ de <- bind_rows(de, res)
 p <- plot_de_volcano(res) + ggtitle("OS <9yr vs >9yr")
 p
 ggsave(file.path(plot_dir, "de_volcano_os9yr.pdf"), p)
+ggsave(file.path(plot_dir, "de_volcano_os9yr.png"), p)
 
 
 
@@ -776,18 +830,11 @@ table(res$analysis)
 p <- plot_de_volcano(res) + ggtitle("OS <3yr vs >9yr")
 p
 ggsave(file.path(plot_dir, "de_volcano_os_q0_vs_q3.pdf"), p)
-
-
-de %>% filter(analysis == "acral") %>% arrange(padj)
-de %>% filter(padj < 0.05)
-
-de %>% filter(gene == "EPHA4")
-# de %>% arrange(desc(avgexpr), desc(log2fc)) %>% distinct(gene, .keep_all=TRUE)
-# de %>% filter(gene == "LZTR1")
+ggsave(file.path(plot_dir, "de_volcano_os_q0_vs_q3.png"), p)
 
 # write gene expression data
-#write_xlsx(de_merged,
-#           file.path(working_dir, 'de_results.xlsx'))
+write_xlsx(de, file.path(working_dir, 'de_results_it.xlsx'))
+
 
 ```
 
@@ -810,17 +857,21 @@ plot_gene <- function(s, x, gene, aes_x, aes_color) {
 }
 
 
-de %>% filter(gene == "PMM1")
-p <- plot_gene(s, y, "PMM1", acral, acral)
-p
+de_genes <- filter(de, analysis=="acral", de != "no") %>% pull(gene)
+for (g in de_genes) {
+  p <- plot_gene(s, y, g, acral, acral)
+  f <- paste0("gene_acral_", g, ".png")
+  ggsave(file.path(plot_dir, f), p)
+}
 
-p <- plot_gene(s, y, "PI15", os_quartile, os_quartile)
-p
-ggsave(file.path(plot_dir, "gene_afap1l2_os.pdf"), p)
 
+de_genes <- filter(de, analysis=="os3yr", de != "no") %>% pull(gene)
+for (g in de_genes) {
+  p <- plot_gene(s, y, g, os_quartile, os_quartile)
+  f <- paste0("gene_os3yr_", g, ".png")
+  ggsave(file.path(plot_dir, f), p)
+}
 
-plot_gene(s, y, "ATP5MC3", os_quartile, os_quartile)
-de %>% filter(padj < 0.05)
 
 
 ```
@@ -869,14 +920,18 @@ plot_gsea_enrichment <- function(x, ranks, gs) {
 plot_gsea_barplot <- function(x, padj_cutoff = 0.01) {
   x <- mutate(x, sig = ifelse(padj < padj_cutoff, ifelse(NES < 0, "dn", "up"), "no"),
               neglog10padj = ifelse(padj < padj_cutoff, -log10(padj), NA))
-  p <- ggplot(x, aes(x=reorder(pathway, NES), y=NES, fill=neglog10padj)) +
+  x <- mutate(x, sig = ifelse(padj < padj_cutoff, ifelse(NES < 0, "dn", "up"), "no"),
+              neglog10padj = -log10(padj))
+  p <- ggplot(x, aes(x=reorder(pathway, NES), y=NES, fill=neglog10padj, color=sig)) +
     geom_col() +
-    scale_fill_gradient(low = "blue", high = "cyan", na.value="#aaaaaa") +
+    scale_fill_gradient(low = "cyan", high = "blue", na.value="#aaaaaa") +
+    scale_color_manual(values = c("up" = "red", "dn" = "red", "no" = "#ffffff00")) +
     coord_flip() +
     labs(x="Analysis", y="Normalized Enrichment Score") +
     theme_minimal()
   return(p)
 }
+
 
 run_batch_fgsea <- function(my_analyses, my_de, my_gs, my_prefix, my_plot_dir, my_padj_cutoff=0.01) {
   gsea <- NULL
@@ -913,43 +968,94 @@ analyses <- unique(de$analysis)
 
 # gsea hpa
 prefix <- "gsea_hpa"
-padj_cutoff <- 0.01
+padj_cutoff <- 0.05
 gsea <- run_batch_fgsea(analyses, de, gs_hpa, prefix, plot_dir, padj_cutoff)
 gsea <- as_tibble(gsea)
+
+# plot acral fav/unfav prognosis
+x <- filter(gsea, pathway == "hpa_mel_prog_fav", analysis == "acral")
+p <- plot_gsea_enrichment(x, get_de_ranks(de, "acral"), gs_hpa)
+ggsave(file.path(plot_dir, "gsea_acral_hpa_mel_prog_fav.pdf"), p, width=4, height=3)
+
+x <- filter(gsea, pathway == "hpa_mel_prog_unfav", analysis == "acral")
+p <- plot_gsea_enrichment(x, get_de_ranks(de, "acral"), gs_hpa)
+ggsave(file.path(plot_dir, "gsea_acral_hpa_mel_prog_unfav.pdf"), p, width=4, height=3)
+
+# plot os3yr fav/unfav prognosis
+x <- filter(gsea, pathway == "hpa_mel_prog_fav", analysis == "os3yr")
+p <- plot_gsea_enrichment(x, get_de_ranks(de, "os3yr"), gs_hpa)
+ggsave(file.path(plot_dir, "gsea_os3yr_hpa_mel_prog_fav.pdf"), p, width=4, height=3)
+
+x <- filter(gsea, pathway == "hpa_mel_prog_unfav", analysis == "os3yr")
+p <- plot_gsea_enrichment(x, get_de_ranks(de, "os3yr"), gs_hpa)
+ggsave(file.path(plot_dir, "gsea_os3yr_hpa_mel_prog_unfav.pdf"), p, width=4, height=3)
+
+
 
 # gsea hallmark
 prefix <- "gsea_hallmark"
 gsea <- run_batch_fgsea(analyses, de, gs_hallmark, prefix, plot_dir, padj_cutoff)
 gsea <- as_tibble(gsea)
 
-gsea %>% filter(analysis == "os_q0_vs_q3", pathway=="HALLMARK_OXIDATIVE_PHOSPHORYLATION") %>% pull(leadingEdge)
-
-
-p <- plot_gsea_barplot(filter(gsea, analysis == "os_q0_vs_q3"))
-p
-ggsave(file.path(plot_dir, "gsea_hallmark_os_q0_vs_q3.pdf"), p, height=8)
-
-p <- plot_gsea_barplot(filter(gsea, analysis == "acral"))
-p
+p <- plot_gsea_barplot(filter(gsea, analysis == "acral"), padj_cutoff = padj_cutoff)
 ggsave(file.path(plot_dir, "gsea_hallmark_acral.pdf"), p, height=8)
 
-
-
-
-
-table(gsea$analysis)
-
-p <- plot_gsea_barplot(x) +
-  labs(title = "Hallmark gene sets")
-p
+p <- plot_gsea_barplot(filter(gsea, analysis == "os3yr"), padj_cutoff = padj_cutoff)
+ggsave(file.path(plot_dir, "gsea_hallmark_os3yr.pdf"), p, height=8)
 
 
 # gsea gobp
 prefix <- "gsea_gobp"
-gsea <- fgsea(pathways=gs_gobp, stats=ranks, minSize=10, eps=0, nPermSimple=10000)
+gsea <- run_batch_fgsea(analyses, de, gs_gobp, prefix, plot_dir, padj_cutoff)
 gsea <- as_tibble(gsea)
 
+x <- filter(gsea, analysis == "acral")
+top25up <- x %>%
+  filter(padj < gsea_padj_cutoff) %>%
+  slice_max(NES, n = 25) %>%
+  arrange(desc(NES)) %>%
+  pull(pathway)
+top25dn <- x %>%
+  filter(padj < gsea_padj_cutoff) %>%
+  slice_min(NES, n = 25) %>%
+  arrange(desc(NES)) %>%
+  pull(pathway)
+top50pathways <- unique(c(top25up, top25dn))
+
+x <- x %>% filter(pathway %in% top50pathways)
+x$pathway <- gsub("GOBP_", "", x$pathway)
+x$pathway <- substr(x$pathway, 1, 50)
+
+p <- plot_gsea_barplot(x) +
+  labs(title = "GOBP gene sets")
+ggsave(file.path(plot_dir, "gsea_gobp_acral.pdf"), p, height=8)
+
+
+x <- filter(gsea, analysis == "os3yr")
+top25up <- x %>%
+  filter(padj < gsea_padj_cutoff) %>%
+  slice_max(NES, n = 25) %>%
+  arrange(desc(NES)) %>%
+  pull(pathway)
+top25dn <- x %>%
+  filter(padj < gsea_padj_cutoff) %>%
+  slice_min(NES, n = 25) %>%
+  arrange(desc(NES)) %>%
+  pull(pathway)
+top50pathways <- unique(c(top25up, top25dn))
+
+x <- x %>% filter(pathway %in% top50pathways)
+x$pathway <- gsub("GOBP_", "", x$pathway)
+x$pathway <- substr(x$pathway, 1, 50)
+
+p <- plot_gsea_barplot(x) +
+  labs(title = "GOBP gene sets")
+ggsave(file.path(plot_dir, "gsea_gobp_os3yr.pdf"), p, height=8)
+
+
+
 # gsea msigdb
+analyses <- c("acral", "os3yr")
 prefix <- "gsea_msigdb"
 gsea <- run_batch_fgsea(analyses, de, gs_msigdb, prefix, plot_dir, padj_cutoff)
 gsea <- as_tibble(gsea)
@@ -958,50 +1064,53 @@ gsea <- as_tibble(gsea)
 f <- file.path(working_dir, paste0("gsea_msigdb_", analysis, "_results.xlsx"))
 write_xlsx(gsea, f)
 
-
-
-
 gsea %>% filter(pathway == "GOCC_PIGMENT_GRANULE") %>% pull(leadingEdge)
 
 
 
-top25up <- gsea %>%
-  filter(padj < gsea_padj_cutoff) %>%
-  slice_max(NES, n = 25) %>%
-  arrange(desc(NES)) %>%
-  pull(pathway)
-top25dn <- gsea %>%
-  filter(padj < gsea_padj_cutoff) %>%
-  slice_min(NES, n = 25) %>%
-  arrange(desc(NES)) %>%
-  pull(pathway)
-top50pathways <- unique(c(top25up, top25dn))
+```
 
-x <- gsea %>% filter(pathway %in% top50pathways)
-x$pathway <- gsub("GOBP_", "", x$pathway)
-x$pathway <- substr(x$pathway, 1, 50)
+## ssgsea plots
 
-p <- plot_gsea_barplot(x) +
-  labs(title = "GOBP gene sets",
-       subtitle = "Published RNA-Seq cohorts")
-p
+```{r }
+library(GSVA)
+
+# assemble cohort of in-transit disease with one sample per patient
+s <- fds$samples %>%
+  filter(sample_type == "it") %>%
+  group_by(patient) %>%
+  arrange(sample_type) %>%
+  slice_head(n=1) %>%
+  ungroup()
+y <- log2(normcounts)[,s$aoi]
+
+# run gsva
+score_method <- "ssgsea"
+gs_list <- c(gs_hpa, gs_hallmark)
+gs_scores <- gsva(y, gs_list, method=score_method)
+
+# waterfall color scheme
+# color_scheme <- setNames(pals::plasma(nlevels(s$response_category)), levels(s$response_category))
+
+x <- bind_cols(s, score = gs_scores["HALLMARK_INTERFERON_GAMMA_RESPONSE",])
+
+colnames(s)
+
+ggplot(x, aes(x=os_years, y=score, color=factor(os_quartile))) +
+  geom_point()
 
 
-for (i in 1:nrow(gsea)) {
-  x <- gsea[i,]
-  p <- plot_gsea_enrichment(x, ranks, cptac_gs)
-  f <- file.path(plot_dir, paste0("st_pdac_", x$pathway, ".pdf"))
-  ggsave(f, plot=p, device="pdf", width=5, height=3)
-}
+p <- ggplot(y, aes(x=reorder(study, picard_pct_intergenic_bases), 
+                   y=picard_pct_intergenic_bases, fill=study)) +
+  geom_boxplot(width = 0.75) +
+  geom_jitter(size = 1, width = 0.1, alpha = 0.6) +
+  theme(axis.text.x = element_text(color = "black", angle = 90, vjust=0.5, hjust=1, size=6)) +
+  theme(legend.position="bottom") +
+  labs(title="Percent Intergenic Bases", subtitle="indicates DNA contamination",
+       x="Study", y="%")
 
 
-table(de$analysis)
-analysis = "os_q0_vs_q3"
-ranks <- get_de_ranks(de, analysis)
 
-gsea <- fgsea(pathways=gs_hallmark, stats=ranks, minSize=10, eps=0, nPermSimple=10000)
-gsea <- fgsea(pathways=gs_hpa, stats=ranks, minSize=10, eps=0, nPermSimple=10000)
-gsea <- fgsea(pathways=gs_msigdb, stats=ranks, minSize=10, eps=0, nPermSimple=10000)
 
 
 ```
@@ -1080,17 +1189,18 @@ x <- ds$counts
 
 sort(ds$samples$bg_auc)[1:20]
 sort(ds$samples$bg_auc, decreasing=TRUE)[1:10]
-s <- "s02_r013_fullroi"
+s <- "s06_r003_fullroi"
 xs <- unlist(x[,s])
 
-bw.adjust <- 2
+bw.adjust <- 5
+bg.quant <- 0.5
 
-reskdefdr <- bgcorrect_kdefdr2(xs, bg, bw.adjust=bw.adjust, fdr.min=0.05)$y
+reskdeppv <- bgcorrect_kdeppv(xs, bg, bw.adjust=bw.adjust, ppv.max=0.9)$y
 resnorm <- pmax(1, bgcorrect_norm(xs, bg))
 resbgsub <- pmax(1, xs - geomean(xs[bg]))
-resqq <- bgcorrect_qq(xs, bg, bw.adjust=bw.adjust)$y
+resqq <- bgcorrect_qq(xs, bg, bw.adjust=bw.adjust, bg.quant=bg.quant)$y
 
-summary(reskdefdr)
+summary(reskdeppv)
 summary(resnorm)
 summary(resbgsub)
 summary(resqq)
@@ -1098,20 +1208,20 @@ summary(resqq)
 
 tbl <- bind_rows(bind_cols(value = xs, bgcorrect="before", bg=bg),
                  bind_cols(value = resnorm, bgcorrect="norm", bg=bg),
-                 bind_cols(value = resbgsub, bgcorrect="norm2", bg=bg),
-                 bind_cols(value = reskdefdr, bgcorrect="bgsub", bg=bg),
+                 bind_cols(value = resbgsub, bgcorrect="bgsub", bg=bg),
+                 bind_cols(value = reskdeppv, bgcorrect="kdeppv", bg=bg),
                  bind_cols(value = resqq, bgcorrect="qq", bg=bg))
 ggplot(tbl, aes(x=value, y=factor(bgcorrect), fill=factor(bg))) +
   stat_density_ridges(alpha=0.5) +
   scale_fill_manual(values = pals::cols25()) + 
   scale_x_log10()
 
-tbl <- bind_cols(xs=xs, ynorm=resnorm, yfdr=reskdefdr, yqq=resqq, bg=bg)
+tbl <- bind_cols(xs=xs, ynorm=resnorm, yppv=reskdeppv, yqq=resqq, bg=bg)
 ggplot(tbl) + 
   geom_point(data=filter(tbl, bg), aes(xs, ynorm), size=3, alpha=0.5, color="blue") +
   geom_line(data=filter(tbl, !bg), aes(xs, ynorm), color="blue") +
-  geom_point(data=filter(tbl, bg), aes(xs, yfdr), size=3, alpha=0.5, color="red") +
-  geom_line(data=filter(tbl, !bg), aes(xs, yfdr), color="red") +
+  geom_point(data=filter(tbl, bg), aes(xs, yppv), size=3, alpha=0.5, color="red") +
+  geom_line(data=filter(tbl, !bg), aes(xs, yppv), color="red") +
   geom_point(data=filter(tbl, bg), aes(xs, yqq), size=3, alpha=0.5, color="green") +
   geom_line(data=filter(tbl, !bg), aes(xs, yqq), color="green") +
 #  geom_hline(yintercept = mean(tbl$y1[bg]), color="red", linetype="dashed") +
@@ -1121,6 +1231,7 @@ ggplot(tbl) +
 
 ```
 
+
 ## quantile-quantile bg correction
 ```{r qqbgcorrect}
 
@@ -1129,111 +1240,41 @@ x <- ds$counts
 
 sort(ds$samples$bg_auc)[1:20]
 sort(ds$samples$bg_auc, decreasing=TRUE)[1:50]
-s <- "s04_r029_fullroi"
-xs <- unlist(x[,s])
-
-res <- bgcorrect_qq(xs, bg, bw.adjust = 2)
-tbl <- bind_cols(x=log2(xs), noise=log2(res$noise), y=log2(res$y))
-
-ggplot(tbl) +
-  geom_line(aes(x, x), color="green") +
-  geom_line(aes(x, noise)) +
-  geom_line(aes(x, y), color="red")
-
-
-
-```
-
-
-
-## BG correction version 3 (kdefdr3)
-
-```{r bgcorrect kdefdr3}
-
-bg <- ds$meta$bg
-x <- ds$counts
-
-sort(ds$samples$bg_auc)[1:20]
-sort(ds$samples$bg_auc, decreasing=TRUE)[1:50]
-s <- "s06_r048_fullroi"
+s <- "s03_r051_fullroi"
 x <- unlist(x[,s])
 
-# parameters
-bg.quantile <- 0.9
-bw.adjust <- 1
-eps <- 1e-10
-fdr.min <- 0.0
+log2x <- log2(x)
 n <- 2^13
+bw <- "nrd"
+bw.adjust <- 5
+bg.quantile <- 0.5
 
-# determine expressed/not expressed probes
-bg.cutoff <- quantile(x[bg], bg.quantile)
-table(bg, x < bg.cutoff)
-noise <- bg | (x < bg.cutoff)
+bw <- bw.nrd(log2x) * bw.adjust
 
-x <- log2(x)
-xmin <- min(x)
-xmax <- max(x)
-
-d <- density(x[!noise], adjust=bw.adjust, from=xmin, to=xmax, n=n)
-dbg <- density(x[noise], adjust=bw.adjust, from=xmin, to=xmax, n=n)
-
+d <- density(log2x[!bg], bw=bw, n=n)
 dcdf <- cumsum(d$y) / sum(d$y)
+
+dbg <- density(log2x[bg], bw=bw, n=n)
 dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
-#pnoise <- dbgcdf / (dcdf + dbgcdf)
-pnoise <- d$y / (d$y + dbg$y + eps)
 
-# ensure isotonic behavior
-ir <- isoreg(d$x, pnoise)
-#yf <- ir$yf[order(ir$ord)]
-yf <- ir$yf
+q <- approx(d$x, dcdf, xout=log2x, ties="ordered")$y
+q <- pmax(bg.quantile, q)
+log2noise <- approx(dbgcdf, dbg$x, xout=q, ties="ordered")$y
+noise <- 2^log2noise
 
-
-tbl <- bind_cols(x=d$x,
-                 d=d$y,
-                 dbg=dbg$y,
-                 dcdf=dcdf,
-                 dbgcdf=dbgcdf,
-                 pnoise=pnoise,
-                 yf=yf)
-
-ggplot(tbl) +
-  geom_line(aes(x,d)) +
-  geom_line(aes(x,dbg), color="red")
-
-ggplot(tbl) +
-  geom_line(aes(x,d)) +
-  geom_line(aes(x,dbg), color="red") +
-  geom_line(aes(x,pnoise), color="blue") + 
-  geom_line(aes(x,yf), color="magenta")
-
-
-
-#dbgcdf <- pmax(dbgcdf, dcdf)
-
-  
-d <- density(x[!noise], adjust=bw.adjust, n=n)
-dcdf <- cumsum(d$y) / sum(d$y)
-#dfun <- splinefun(d$x, dcdf, ties="ordered", method="monoH.FC")
-dfun <- approxfun(d$x, dcdf, ties="ordered")
-
-
-dbg <- density(log2x[bg], adjust=bw.adjust, n=n)
-dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
-#dbgfun <- splinefun(dbgcdf, dbg$x, ties="ordered", method="monoH.FC")
-dbgfun <- approxfun(dbgcdf, dbg$x, ties="ordered")
-
-log2noise <- dbgfun(dfun(log2x))
-noise <- log2noise^2
 # ensure noise is not greater than (x - 1)
 noise <- pmin(noise, x - 1)
 y <- x - noise
 y <- y - (min(y) - 1)
+#y <- pmax(1, x - noise)
+
 # ensure isotonic behavior
 ir <- isoreg(x, y)
 yf <- ir$yf[order(ir$ord)]
 
 res <- list(
-  y = yf,
+  y = y,
+  yf = yf,
   noise = noise,
   dx = d$x,
   dy = d$y,
@@ -1244,67 +1285,152 @@ res <- list(
   bw.adjust = bw.adjust
 )
 
-x <- log2(xs)
-xmin <- min(x)
-xmax <- max(x)
-n <- 2^13
-eps <- 1e-10
-bw.adjust=5
-fdr.min <- 0.0
-
-bw <- bw.nrd(x) * bw.adjust
-
-d <- density(x[!noise], bw=bw, from=xmin, to=xmax, n=n)
-dcdf <- cumsum(d$y) / sum(d$y)
-
-dbg <- density(x[noise], bw=bw, from=xmin, to=xmax, n=n)
-dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
-dbgcdf <- pmax(dbgcdf, dcdf)
-
-dfdr <- (1-dbgcdf) / (1-dcdf+eps)
-dfdr <- pmin(1, dfdr + fdr.min)
-scaled_fdr <- xmin + (xmax - xmin) * cumsum(dfdr) / n
-scaled_fdr <- pmin(d$x, scaled_fdr)
-xnoise <- approx(d$x, scaled_fdr, xout=x)$y
-xnoise <- pmin(xnoise, x)
-y <- 2^x - 2^xnoise + 1
-
-
-tbl <- bind_cols(dx = d$x,
-                 dy = d$y,
-                 dbg = dbg$y,
-                 dbgcdf = dbgcdf,
-                 dfdr = dfdr,
-                 scaled_fdr = scaled_fdr)
+tbl <- bind_cols(bg=bg, 
+                 x=log2(x), 
+                 noise=log2(res$noise), 
+                 y=log2(res$y),
+                 yf=log2(res$yf))
 
 ggplot(tbl) +
-  geom_line(aes(dx, dy)) +
-  geom_line(aes(dx, dbg), color="red")
+  geom_line(aes(x, x), color="green") +
+  geom_line(aes(x, noise)) +
+  geom_line(aes(x, y), color="red", alpha=0.5) +
+  geom_line(aes(x, yf), color="blue", alpha=0.5) +
+  #geom_point(aes(x, yf, color=bg), alpha=0.5) +
+  geom_vline(xintercept=log2(median(x[bg])), color="red", linetype="dashed", alpha=0.5)
+
+
+res <- bgcorrect_qq(x, bg, bw.adjust = 3, bg.quant=0.5)
+tbl <- bind_cols(x=x, bg=bg, noise=res$noise, y=res$y, yf=res$yf)
 
 ggplot(tbl) +
-  geom_line(aes(dx, dfdr), alpha=0.5, color="blue") +
-  geom_line(aes(dx, dcdf)) +
-  geom_line(aes(dx, dbgcdf), color="red")
-
-ggplot(tbl) +
-  geom_line(aes(dx, scaled_fdr))
-
-tbl <- bind_cols(x=xs, y=y, xnoise=2^xnoise, bg=bg, noise=noise)
-ggplot(tbl) + 
-  geom_point(data=filter(tbl, noise), aes(x, y), size=3, alpha=0.5, color="red") +
-  geom_point(data=filter(tbl, !noise), aes(x, y), size=1, alpha=0.3) +
-  geom_line(data=filter(tbl, !noise), aes(x, y), alpha=0.5) +
-  geom_line(aes(x, xnoise), color="blue") +
-  geom_hline(yintercept = mean(tbl$y[bg]), color="red", linetype="dashed") +
-  geom_vline(xintercept = mean(tbl$x[bg]), color="red", linetype="dashed") + 
-  scale_x_log10() +
+  geom_line(aes(x, x), color="green") +
+  geom_line(aes(x, noise)) +
+  geom_line(aes(x, y), color="red", alpha=0.5) +
+  geom_line(aes(x, yf), color="blue", alpha=0.5) +
+  geom_point(aes(x, yf, color=bg), alpha=0.5) +
+  scale_x_log10() + 
   scale_y_log10()
 
 
-approx(d$x, dbg$y, xout=mean(x))
-approx(d$x, d$y, xout=mean(x))
-approx(d$x, dfdr, xout=mean(x))
+```
 
+
+
+## BG correction version 3
+
+```{r bgcorrect kdefdr3}
+
+bg <- ds$meta$bg
+x <- ds$counts
+
+sort(ds$samples$bg_auc)[1:20]
+sort(ds$samples$bg_auc, decreasing=TRUE)[1:50]
+s <- "s02_r027_fullroi"
+x <- unlist(x[,s])
+
+# parameters
+bg.quant <- 0.5
+fdr.min <- 0.05
+ppv.max <- 0.95
+bw.adjust <- 1
+eps <- 1e-10
+n <- 2^13
+
+x <- log2(x)
+xmin <- min(x)
+xmax <- max(x)
+
+bw <- bw.nrd(x) * bw.adjust
+
+#bg.cutoff <- quantile(x[bg], fdr.min) - quantile(x[bg], 0)
+bg.shift <- quantile(x[bg], fdr.min) - quantile(x[bg], 0)
+
+d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
+dcdf <- cumsum(d$y) / sum(d$y)
+
+dbg <- density(x[bg], bw=bw, from=xmin, to=xmax, n=n)
+dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
+
+dbg2 <- density(x[bg] + bg.shift, bw=bw, from=xmin, to=xmax, n=n)
+dbgcdf2 <- cumsum(dbg2$y) / sum(dbg2$y)
+
+#dnpv <- dbgcdf / (dcdf + dbgcdf)
+#dfor <- dcdf / (dcdf + dbgcdf)
+#dppv <- (1 - dcdf + eps) / (1 - dcdf + 1 - dbgcdf + eps)
+
+dfdr <- (1 - dbgcdf) / (1 - dbgcdf + 1 - dcdf + eps)
+dfdr2 <- (1 - dbgcdf2) / (1 - dbgcdf2 + 1 - dcdf + eps)
+
+
+tbl <- bind_cols(dx = d$x,
+                 dcdf = dcdf,
+                 dbgcdf = dbgcdf,
+                 dbgcdf2 = dbgcdf2,
+                 dppv = dppv, 
+                 dnpv = dnpv,
+                 dfor = dfor,
+                 dfdr = dfdr,
+                 dfdr2 = dfdr2)
+
+ggplot(tbl) +
+  geom_line(aes(dx, dcdf)) +
+  geom_line(aes(dx, dbgcdf), color="red") +
+  geom_line(aes(dx, dbgcdf2), color="red", linetype="dashed") +
+#  geom_line(aes(dx, dppv), color="blue", alpha=0.8) +
+  geom_line(aes(dx, dfdr), color="magenta", alpha=0.8) +
+  geom_line(aes(dx, dfdr2), color="magenta", alpha=0.8, linetype="dashed") +
+  geom_vline(xintercept=median(x[bg]), color="red", linetype="dashed", alpha=0.5)
+
+
+
+# dppv <- dppv - min(dppv)
+# dppv <- ppv.max * dppv / max(dppv)
+# summary(dppv)
+# # ensure isotonic behavior
+# dppv.ir <- isoreg(d$x, dppv)$yf
+
+#f <- splinefun(d$x, dppv.ir, method="monoH.FC", ties="ordered")
+#y <- x * f(x)
+
+#ppv <- approx(d$x, dppv.ir, xout=x, ties="ordered")$y
+#y <- x * ppv
+
+# ensure isotonic behavior
+ppv <- approx(d$x, dppv, xout=x, ties="ordered")$y
+y <- x * ppv
+ir <- isoreg(x, y)
+yf <- ir$yf[order(ir$ord)]
+
+tbl <- bind_cols(x = x, 
+                 y = y, 
+                 yf = yf)
+ggplot(tbl) +
+  geom_line(aes(x, x), color="black", alpha=0.5) +
+  geom_line(aes(x, y), color="red", alpha=0.5) +
+  geom_line(aes(x, yf), color="blue", alpha=0.5)
+
+
+
+res <- bgcorrect_kdeppv(x, bg, bw.adjust, ppv.max)
+
+tbl <- bind_cols(dx = res$dx,
+                 dcdf = res$dcdf,
+                 dbgcdf = res$dbgcdf,
+                 dppv = res$dppv)
+ggplot(tbl) +
+  geom_line(aes(dx, dcdf)) +
+  geom_line(aes(dx, dbgcdf), color="red") +
+  geom_line(aes(dx, dppv), color="blue", alpha=0.8) +
+  geom_vline(xintercept=median(log2(x)[bg]), color="red", linetype="dashed", alpha=0.5)
+
+tbl <- bind_cols(x = x, 
+                 y = res$y)
+ggplot(tbl) +
+  geom_line(aes(x, x), color="black", alpha=0.5) +
+  geom_line(aes(x, y), color="blue", alpha=0.5) +
+  scale_x_log10() +
+  scale_y_log10()
 
 
 ```

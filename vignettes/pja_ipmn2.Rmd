@@ -20,7 +20,6 @@ library(stgeomx)
 library(tidyverse)
 library(readxl)
 library(writexl)
-library(arrow)
 library(limma)
 library(edgeR)
 
@@ -51,7 +50,7 @@ geomx_dir <- file.path(working_dir, "geomx")
 # geomx data
 geomx_xlsx <- file.path(geomx_dir, "pja_ipmn2_wta_2022-12-02.xlsx")
 # sample annotation file
-geomx_annot_xlsx <- file.path(geomx_dir, "pja_ipmn2_annotations_2022-12-07.xlsx")
+geomx_annot_xlsx <- file.path(geomx_dir, "pja_ipmn2_annotations_2023-02-06.xlsx")
 
 # qc parameters
 geomx_negprobe_lod_quantile = 0.9
@@ -61,6 +60,10 @@ geomx_aoi_min_frac_expr = 0.2
 geomx_gene_min_frac_expr = 0.1
 
 # normalization
+norm_method = "qn"
+bgcorrect_method = "qq"
+bgcorrect_bw_adjust = 5
+bgcorrect_bg_quant = 0.5
 norm_method = "qn"
 
 # de parameters
@@ -93,11 +96,14 @@ annot <- read_excel(geomx_annot_xlsx)
 ds$samples <- ds$samples %>% 
   inner_join(annot, by="SegmentDisplayName")
 
+table(ds$samples$patient)
+table(ds$samples$slide)
 table(ds$samples$path)
 table(ds$samples$path_specimen)
 table(ds$samples$path_aoi)
 table(ds$samples$subset)
 table(ds$samples$segment)
+
 
 ```
 
@@ -128,14 +134,33 @@ p <- st_geomx_plot_aoi_filter(ds, geomx_min_counts, geomx_min_auc, geomx_aoi_min
 p
 ggsave(file.path(plot_dir, "qc_aoi_filter.pdf"), p)
 
-colnames(ds$samples)
-ggplot(ds$samples) + 
-  geom_point(aes(num_counts, bg_auc, color=bg_cpm)) +
+p <- ggplot(ds$samples) + 
+  geom_point(aes(num_counts, bg_auc, color=bg_ks_dist)) + 
+  geom_vline(xintercept = geomx_min_counts, color="red", linetype="dashed") +
+  geom_hline(yintercept = geomx_min_auc, color="red", linetype="dashed") +
   scale_x_log10() +
   scale_color_viridis_c() +
-  facet_wrap(~ segment, scales="free")
+  theme_bw() +
+  facet_wrap(~ subset)
+#  facet_wrap(~ subset, scales="free")
+p
+ggsave(file.path(plot_dir, "qc_aoi_filter_subset.pdf"), p)
 
-# table(ds$samples$keep, ds$samples$segment)
+
+colnames(ds$samples)
+p <- ggplot(filter(ds$samples, subset=="epithelial")) + 
+  geom_point(aes(AOINucleiCount, AOISurfaceArea, color=bg_ks_dist)) + 
+  geom_vline(xintercept = geomx_min_counts, color="red", linetype="dashed") +
+  geom_hline(yintercept = geomx_min_auc, color="red", linetype="dashed") +
+  scale_x_log10() +
+  scale_color_viridis_c() +
+  theme_bw() +
+  facet_wrap(~ path_aoi)
+#  facet_wrap(~ subset, scales="free")
+p
+ggsave(file.path(plot_dir, "qc_aoi_filter_subset.pdf"), p)
+
+
 
 ```
 
@@ -153,14 +178,82 @@ ggsave(file.path(plot_dir, "qc_gene_filtering_fpr_auc.pdf"), p)
 
 ```{r background correction}
 
-summary(ds$samples$bg_geomean)
-summary(apply(ds$counts, 2, max))
+# summary(ds$samples$bg_geomean)
+# summary(apply(ds$counts, 2, max))
+# 
+# x <- cpm(st_geomx_bgcorrect(ds, method="kdefdr", bw.adjust=5, fdr.min=0.05))
+# p <- st_geomx_plot_bgcorrect(ds, x)
+# p
+# p <- st_geomx_plot_bgcorrect_density(ds, x)
+# p
 
-x <- cpm(st_geomx_bgcorrect(ds, method="kdefdr", bw.adjust=5, fdr.min=0.05))
-p <- st_geomx_plot_bgcorrect(ds, x)
-p
-p <- st_geomx_plot_bgcorrect_density(ds, x)
-p
+# params for plot
+quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.99)
+width <- 16
+height <- 6
+  
+# params for bgcorrect
+bw.adjust <- 5
+bg.quant <- 0.5
+ppv.max <- 0.95
+
+
+## plots
+
+# raw cpm
+x <- as_tibble(cpm(ds$counts))
+p <- st_geomx_plot_bg_dotplot(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_none_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_none_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# p <- st_geomx_plot_dist_boxplot(ds, xraw)
+# f <- file.path(plot_dir, "qc_bgcorrect_none_boxplot.pdf")
+# ggsave(f, p, width=width, height=8)
+
+# qq cpm
+x <- st_geomx_bgcorrect(ds, method="qq", bw.adjust=bw.adjust, bg.quant=bg.quant)
+x <- as_tibble(cpm(x))
+p <- st_geomx_plot_bg_dotplot(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_qq_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_qq_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# p <- st_geomx_plot_dist_boxplot(ds, x)
+# f <- file.path(plot_dir, "qc_bgcorrect_qq_boxplot.pdf")
+# ggsave(f, p, width=16, height=8)
+
+# ppv cpm
+x <- st_geomx_bgcorrect(ds, method="kdeppv", bw.adjust=bw.adjust, ppv.max=ppv.max)
+x <- as_tibble(cpm(x))
+p <- st_geomx_plot_bg_dotplot(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_ppv_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_ppv_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# p <- st_geomx_plot_dist_boxplot(ds, x)
+# f <- file.path(plot_dir, "qc_bgcorrect_ppv_boxplot.pdf")
+# ggsave(f, p, width=16, height=8)
+
+# bgsub cpm
+x <- st_geomx_bgcorrect(ds, method="bgsub", bg.quant=bg.quant)
+x <- as_tibble(cpm(x))
+p <- st_geomx_plot_bg_dotplot(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_bgsub_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_bgsub_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# p <- st_geomx_plot_dist_boxplot(ds, x)
+# f <- file.path(plot_dir, "qc_bgcorrect_bgsub_boxplot.pdf")
+# ggsave(f, p, width=16, height=8)
 
 
 ```
@@ -658,10 +751,207 @@ de %>% filter(padj < 0.05)
 ```
 
 
+## bg correction testing
+
+```{r bg correction testing}
+
+# params for plot
+quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.99)
+width <- 16
+height <- 6
+  
+# params for bgcorrect
+bw.adjust <- 2
+bg.quant <- 0.5
+ppv.max <- 0.95
+
+bg <- ds$meta$bg
+x <- ds$counts
+
+
+## plots
+
+# raw cpm
+x <- as_tibble(cpm(ds$counts))
+p <- st_geomx_plot_bg_dotplot(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_none_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_none_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# p <- st_geomx_plot_dist_boxplot(ds, xraw)
+# f <- file.path(plot_dir, "qc_bgcorrect_none_boxplot.pdf")
+# ggsave(f, p, width=width, height=8)
+
+# qq cpm
+x <- st_geomx_bgcorrect(ds, method="qq", bw.adjust=bw.adjust, bg.quant=bg.quant)
+x <- as_tibble(cpm(x))
+p <- st_geomx_plot_bg_dotplot(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_qq_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_qq_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# p <- st_geomx_plot_dist_boxplot(ds, x)
+# f <- file.path(plot_dir, "qc_bgcorrect_qq_boxplot.pdf")
+# ggsave(f, p, width=16, height=8)
+
+# ppv cpm
+x <- st_geomx_bgcorrect(ds, method="kdeppv", bw.adjust=bw.adjust, ppv.max=ppv.max)
+x <- as_tibble(cpm(x))
+p <- st_geomx_plot_bg_dotplot(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_ppv_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_ppv_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# p <- st_geomx_plot_dist_boxplot(ds, x)
+# f <- file.path(plot_dir, "qc_bgcorrect_ppv_boxplot.pdf")
+# ggsave(f, p, width=16, height=8)
+
+# bgsub cpm
+x <- st_geomx_bgcorrect(ds, method="bgsub", bg.quant=bg.quant)
+x <- as_tibble(cpm(x))
+p <- st_geomx_plot_bg_dotplot(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_bgsub_dotplot.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+p <- st_geomx_plot_bg_scatter(ds, x, quantiles)
+f <- file.path(plot_dir, "qc_bgcorrect_bgsub_scatter.pdf")
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# p <- st_geomx_plot_dist_boxplot(ds, x)
+# f <- file.path(plot_dir, "qc_bgcorrect_bgsub_boxplot.pdf")
+# ggsave(f, p, width=16, height=8)
 
 
 
+```
 
+
+## BG correction version 4
+
+```{r bgcorrect v4}
+
+# parameters
+eps <- 1e-10
+n <- 2^13
+bw.adjust <- 2
+bg.quant <- 0.0
+
+# choose sample
+sort(ds$samples$bg_auc)[1:20]
+sort(ds$samples$bg_auc, decreasing=TRUE)[1:10]
+
+s <- c(ds$samples %>% slice_max(bg_auc, n=10) %>% pull(aoi), 
+       ds$samples %>% slice_min(bg_auc, n=10) %>% pull(aoi))
+
+for (i in s) {
+  print(i)
+
+  # setup
+  bg <- ds$meta$bg
+  x <- log2(unlist(ds$counts[,i]))
+  xmin <- min(x)
+  xmax <- max(x)
+  
+  expressed <- !bg & (x > quantile(x[bg], bg.quant))
+  table(bg, expressed)
+  
+  # select bandwidth
+  bwgene <- bw.nrd0(x[expressed]) * bw.adjust
+  bwbg <- bw.nrd0(x[bg]) * bw.adjust
+  bw <- max(bwgene, bwbg)
+  
+  d <- density(x[expressed], bw=bw, from=xmin, to=xmax, n=n)
+  dcdf <- cumsum(d$y) / sum(d$y)
+  
+  dbg <- density(x[bg], bw=bw, from=xmin, to=xmax, n=n)
+  dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
+  
+  # false omission rate (FOR)
+  dp <- dcdf / (dbgcdf + dcdf + eps)
+  dp <- (dp - min(dp)) / (max(dp) - min(dp))
+  
+  # ensure isotonic behavior
+  dp.ir <- isoreg(d$x, dp)$yf
+  
+  # interpolate
+  p <- approx(d$x, dp.ir, xout=x, ties="ordered")$y
+  #f <- splinefun(d$x, dp.ir, method="natural", ties="ordered")
+  #p <- f(x)
+  
+  # transform
+  y <- (2^x) * p
+  y <- pmax(1, y)
+  
+  tbl <- bind_cols(dx = d$x,
+                   dcdf = dcdf,
+                   dbgcdf = dbgcdf,
+                   dfor = dfor,
+                   dp = dp,
+                   dp.ir = dp.ir)
+  
+  ggplot(tbl) +
+    geom_line(aes(dx, dcdf)) +
+    geom_line(aes(dx, dbgcdf), color="red") +
+    geom_line(aes(dx, dp), color="blue", alpha=0.8) +
+    geom_line(aes(dx, dp.ir), color="blue", linetype="dashed", alpha=0.8) +
+    geom_vline(xintercept=median(x[bg]), color="red", linetype="dashed", alpha=0.5)
+  
+  
+  tbl <- bind_cols(x = 2^x, 
+                   y = y)
+  print(ggplot(tbl) +
+    geom_line(aes(x, x), color="black", alpha=0.5) +
+    geom_line(aes(x, y), color="red", alpha=0.5) + 
+    scale_x_log10() +
+    scale_y_log10())
+
+}
+
+
+
+# choose samples
+sort(ds$samples$bg_auc)[1:20]
+sort(ds$samples$bg_auc, decreasing=TRUE)[1:10]
+s <- c(ds$samples %>% slice_max(bg_auc, n=10) %>% pull(aoi), 
+       ds$samples %>% slice_min(bg_auc, n=10) %>% pull(aoi))
+
+bg <- ds$meta$bg
+
+for (i in s) {
+  print(i)
+  x <- unlist(ds$counts[,i])
+  res <- bgcorrect_kdenpv(x, bg, bw.adjust=2, bg.quant=0.0)
+  
+  tbl <- bind_cols(dx = res$dx,
+                   dcdf = res$dcdf,
+                   dbgcdf = res$dbgcdf,
+                   dp = res$dp)
+
+  print(ggplot(tbl) +
+    geom_line(aes(dx, dcdf)) +
+    geom_line(aes(dx, dbgcdf), color="red") +
+    geom_line(aes(dx, dp), color="blue", alpha=0.8) +
+    geom_vline(xintercept=median(log2(x)[bg]), color="red", linetype="dashed", alpha=0.5)
+  )
+  
+  tbl <- bind_cols(x = x, 
+                   y = res$y)
+  print(ggplot(tbl) +
+          geom_line(aes(x, x), color="black", alpha=0.5) +
+          geom_line(aes(x, y), color="red", alpha=0.5) + 
+          scale_x_log10() +
+          scale_y_log10()
+  )
+  
+}
+
+
+```
 
 ## BG correction exploration
 
