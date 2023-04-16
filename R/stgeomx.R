@@ -10,42 +10,33 @@
 #   Check Package:             'Cmd + Shift + E'
 #   Test Package:              'Cmd + Shift + T'
 
+
+
+
 #'
-#' Read Nanostring GeoMx DSP data
+#' Standardize names using Slide, ROI, Segment, and AOI columns of sample
+#' annotation table. Partition count table into metadata and counts.
 #'
 #' @importFrom magrittr %>%
-#' @importFrom readxl read_excel
 #' @import dplyr
+#' @import rlang
 #'
-#' @param xlsx_file Excel file containing input data
-#' @param sample_sheet Excel sheet name containing sample information
-#' @param count_sheet Excel sheet name containing counts
-#' @param slide_key_col sample sheet column name containing scan
-#' @param roi_key_col sample sheetcolumn name containing roi
-#' @param segment_key_col sample sheet column name containing segment
-#' @param aoi_key_col sample sheet column name corresponding to columns of count sheet
+#' @param slide_key_col sample column name containing scan
+#' @param roi_key_col sample column name containing roi
+#' @param segment_key_col sample column name containing segment
+#' @param aoi_key_col sample column name corresponding to columns of count sheet
 #' @param probe_key_col count sheet column name unique probe identifier
 #' @param gene_key_col count sheet column name unique gene identifier
 #' @param negprobe_gene_name name of gene corresponding to negative probes
-#' @returns list containing samples, metadata, and counts
-#' @export
-st_geomx_read <- function(xlsx_file,
-                          sample_sheet = "SegmentProperties",
-                          count_sheet = "BioProbeCountMatrix",
-                          slide_key_col = "ScanLabel",
-                          roi_key_col = "ROILabel",
-                          segment_key_col = "SegmentLabel",
-                          aoi_key_col = "SegmentDisplayName",
-                          probe_key_col = "ProbeDisplayName",
-                          gene_key_col = "TargetName",
-                          negprobe_gene_name = "NegProbe-WTX") {
-  # read samples (remove duplicates based on aoi key)
-  samples <- read_excel(xlsx_file, sheet=sample_sheet) %>%
-    distinct(.data[[aoi_key_col]], .keep_all=TRUE)
-
-  # read counts
-  counts <- read_excel(xlsx_file, sheet=count_sheet,
-                       .name_repair = "minimal")
+#' @returns dataset
+prepare_input <- function(samples, counts,
+                          slide_key_col,
+                          roi_key_col,
+                          segment_key_col,
+                          aoi_key_col,
+                          probe_key_col,
+                          gene_key_col,
+                          negprobe_gene_name) {
   # ensure all samples found in counts
   inds <- match(pull(samples, !!aoi_key_col), colnames(counts))
   stopifnot(all(!is.na(inds)))
@@ -74,7 +65,100 @@ st_geomx_read <- function(xlsx_file,
   colnames(counts) <- samples$aoi
   stopifnot(all(samples$aoi == colnames(counts)))
 
-  ds <- list(samples=samples, meta=meta, counts=counts)
+  ds <- list(samples=samples,
+             meta=meta,
+             counts=counts)
+  return(ds)
+}
+
+
+#'
+#' Read Nanostring GeoMx DSP data from tab-delimited text files
+#'
+#' @importFrom magrittr %>%
+#' @importFrom readr read_tsv
+#' @import dplyr
+#' @import rlang
+#'
+#' @param sample_tsv_file tab-delimited text file with sample annotations
+#' @param count_tsv_file tab-delimited text file with count matrix/metadata
+#' @param slide_key_col sample column name containing scan
+#' @param roi_key_col sample column name containing roi
+#' @param segment_key_col sample column name containing segment
+#' @param aoi_key_col sample column name corresponding to columns of count sheet
+#' @param probe_key_col count sheet column name unique probe identifier
+#' @param gene_key_col count sheet column name unique gene identifier
+#' @param negprobe_gene_name name of gene corresponding to negative probes
+#' @returns dataset
+#' @export
+st_geomx_read_tsv <- function(sample_tsv_file,
+                              count_tsv_file,
+                              slide_key_col = "ScanLabel",
+                              roi_key_col = "ROILabel",
+                              segment_key_col = "SegmentLabel",
+                              aoi_key_col = "SegmentDisplayName",
+                              probe_key_col = "ProbeDisplayName",
+                              gene_key_col = "TargetName",
+                              negprobe_gene_name = "NegProbe-WTX") {
+  # read samples (remove duplicates based on aoi key)
+  samples <- read_tsv(sample_tsv_file,
+                      na = c("", "NA", "NaN"),
+                      show_col_types=FALSE) %>%
+    distinct(.data[[aoi_key_col]], .keep_all=TRUE)
+  # read count data
+  counts <- read_tsv(count_tsv_file,
+                     show_col_types=FALSE,
+                     name_repair="minimal")
+  # prepare dataset
+  ds <- prepare_input(samples, counts, slide_key_col, roi_key_col,
+                      segment_key_col, aoi_key_col, probe_key_col,
+                      gene_key_col, negprobe_gene_name)
+  return(ds)
+}
+
+
+#'
+#' Read Nanostring GeoMx DSP data from an Excel (XLSX) file
+#'
+#' @importFrom magrittr %>%
+#' @importFrom readxl read_excel
+#' @import dplyr
+#'
+#' @param xlsx_file Excel file containing input data
+#' @param sample_sheet Excel sheet name containing sample information
+#' @param count_sheet Excel sheet name containing counts
+#' @param slide_key_col sample sheet column name containing scan
+#' @param roi_key_col sample sheetcolumn name containing roi
+#' @param segment_key_col sample sheet column name containing segment
+#' @param aoi_key_col sample sheet column name corresponding to columns of count sheet
+#' @param probe_key_col count sheet column name unique probe identifier
+#' @param gene_key_col count sheet column name unique gene identifier
+#' @param negprobe_gene_name name of gene corresponding to negative probes
+#' @returns list containing samples, metadata, and counts
+#' @export
+st_geomx_read_xlsx <- function(xlsx_file,
+                               sample_sheet = "SegmentProperties",
+                               count_sheet = "BioProbeCountMatrix",
+                               slide_key_col = "ScanLabel",
+                               roi_key_col = "ROILabel",
+                               segment_key_col = "SegmentLabel",
+                               aoi_key_col = "SegmentDisplayName",
+                               probe_key_col = "ProbeDisplayName",
+                               gene_key_col = "TargetName",
+                               negprobe_gene_name = "NegProbe-WTX") {
+  # read samples (remove duplicates based on aoi key)
+  samples <- read_excel(xlsx_file, sheet=sample_sheet,
+                        na = c("", "NaN")) %>%
+    distinct(.data[[aoi_key_col]], .keep_all=TRUE)
+
+  # read counts
+  counts <- read_excel(xlsx_file, sheet=count_sheet,
+                       .name_repair = "minimal")
+
+  # prepare dataset
+  ds <- prepare_input(samples, counts, slide_key_col, roi_key_col,
+                      segment_key_col, aoi_key_col, probe_key_col,
+                      gene_key_col, negprobe_gene_name)
   return(ds)
 }
 
@@ -83,142 +167,170 @@ st_geomx_read <- function(xlsx_file,
 #' Geometric mean of a vector
 #'
 #' @param x vector of numeric values
+#' @returns numeric
 geomean <- function(x) {
   return(exp(mean(log(x))))
 }
 
-
-calc_ks_stats <- function(x, bg, iter=10) {
-  # KS test of gene vs background
-  ks_dist <- NULL
-  ks_pval <- NULL
-  bg.length <- sum(bg)
-  for (i in 1:ncol(x)) {
-    print(i)
-    xi <- unlist(x[!bg, i])
-    xibg <- unlist(x[bg, i])
-
-    d <- NULL
-    p <- NULL
-    for (j in 1:iter) {
-      xj <- sample(xi, size=bg.length)
-      res <- suppressWarnings(stats::ks.test(xj, xibg, alternative="less"))
-      d[j] <- res$statistic
-      p[j] <- res$p.value
-    }
-    ks_dist[i] <- median(d[j])
-    ks_pval[i] <- median(p[j])
-  }
-  return(list(ks_dist=ks_dist, ks_pval=ks_pval))
-}
-
 #'
-#' Compute qc metrics
+#' Geometric mean of a vector
 #'
-#' @importFrom magrittr %>%
-#' @import dplyr
-#'
-#' @param meta tibble of count metadata
-#' @param counts tibble of counts
-#' @param bg_lod_quantile number range (0.0-1.0)
-calc_bg_stats <- function(meta, counts, bg_lod_quantile) {
-  # calculate AUC of gene vs background (negative probe)
-  proc_auc <- function(responses, predictors) {
-    myroc <- pROC::roc(responses, predictors, levels=c(TRUE, FALSE), direction="<")
-    myauc <- as.numeric(myroc$auc)
-    return(myauc)
-  }
-  bg_auc <- bind_cols(select(meta, bg), counts) %>%
-    summarize(across(-bg, ~ proc_auc(bg, .x))) %>%
-    unlist()
-
-  # KS test of gene vs background
-  # ks_stats <- calc_ks_stats(counts, meta$bg)
-  ks_dist <- NULL
-  ks_pval <- NULL
-  bg <- meta$bg
-  for (i in 1:ncol(counts)) {
-    x <- unlist(counts[!bg, i])
-    xbg <- unlist(counts[bg, i])
-    res <- suppressWarnings(stats::ks.test(x, xbg, alternative="less"))
-    ks_dist[i] <- res$statistic
-    ks_pval[i] <- res$p.value
-  }
-
-  x <- counts[meta$bg, ]
-  y <- bind_cols(
-    bg_ks_dist = ks_dist,
-    bg_ks_pval = ks_pval,
-    bg_auc = bg_auc,
-    bg_counts = colSums(x),
-    bg_cpm = 1e6 * colSums(x) / colSums(counts),
-    bg_geomean = apply(x, 2, geomean),
-    bg_median = apply(x, 2, stats::median),
-    bg_q3 = apply(x, 2, stats::quantile, 0.75),
-    bg_max = apply(x, 2, max),
-    bg_lod = apply(x, 2, stats::quantile, bg_lod_quantile)
-  )
-  return(y)
+#' @param x vector of numeric values
+#' @param w vector of numeric weights with length equal to x
+#' @returns numeric
+weighted_geomean <- function(x, w) {
+  return(exp(sum(w * log(x))/sum(w)))
 }
 
 #'
 #' Compute frac expressed genes above threshold
 #'
-#' @param meta tibble count metadata
 #' @param counts tibble counts
+#' @param bg boolean vector of TRUE/FALSE corresponding to count rows
 #' @param bg_lod vector of limit of detection thresholds per sample
 #' @returns list
-calc_frac_expr <- function(meta, counts, bg_lod) {
+calc_frac_expr <- function(counts, bg, bg_lod) {
   x <- sweep(counts, 2, bg_lod, FUN="-")
   x <- apply(x, 2, pmax, 0)
   x <- x > 0
   gene_frac_expr <- rowSums(x) / ncol(x)
-  y <- x[meta$bg == FALSE,]
+  y <- x[bg == FALSE,]
   sample_frac_expr <- colSums(y) / nrow(y)
   return(list(s=sample_frac_expr, g=gene_frac_expr))
 }
 
+
 #'
-#' Process input data
+#' Compute quantiles of values in vector 'x' along
+#' compute ecdf of background distribution and use it to
+#' interpolate quantiles of genes in vector
+#'
+#' @param x vector of numeric values
+#' @param bg vector of TRUE/FALSE corresponding to x
+#' @param bw.adjust bandwidth adjustment multiplier for 'density' function
+#' @return vector of quantiles corresponding to array 'x'
+compute_quantiles_kde <- function(x, bg, bw.adjust=2) {
+  # setup
+  n <- 2^13
+  xlog <- log2(x)
+  # select bandwidth
+  bw <- stats::bw.nrd0(xlog[bg]) * bw.adjust
+  # smooth ecdf function for neg probes
+  dbg <- stats::density(xlog[bg], bw=bw, n=n)
+  dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
+  # find bg quantiles
+  q <- stats::approx(dbg$x, dbgcdf, xout=xlog, yleft=0, yright=1, ties="ordered")$y
+  return(q)
+}
+
+
+#'
+#' Remove AOIs with no valid counts
 #'
 #' @importFrom magrittr %>%
 #' @import dplyr
 #'
-#' @param ds list produced by st_geomx_read
-#' @param bg_lod_quantile number (0.0-1.0)
-#' @returns list
+#' @param ds list produced by st_geomx_merge_probes
+#' @returns list dataset
 #' @export
-st_geomx_process_input <- function(ds, bg_lod_quantile) {
+st_geomx_rm_empty_aois <- function(ds) {
+  # initial filter of "empty" samples with essential zero counts
+  keep <- ds$samples$count_max > 1
+  fds <- list(
+    samples = filter(ds$samples, keep),
+    meta = ds$meta,
+    counts = ds$counts[, keep]
+  )
+  return(fds)
+}
+
+
+#'
+#' Preprocess input data
+#'
+#' @importFrom magrittr %>%
+#' @import dplyr
+#'
+#' @param ds dataset produced by st_geomx_read
+#' @param bg_lod_quantile number (0.0-1.0)
+#' @returns dataset
+#' @export
+st_geomx_preprocess <- function(ds, bg_lod_quantile) {
   # unpack dataset
   samples <- ds$samples
   meta <- ds$meta
   counts <- ds$counts
-
-  # background noise statistics
-  x <- calc_bg_stats(meta, counts, bg_lod_quantile)
-  samples <- bind_cols(samples, x)
-
-  # probes expressed over background
-  x <- calc_frac_expr(meta, counts, samples$bg_lod)
-  samples$frac_expr <- x$s
-  meta$frac_expr <- x$g
+  bg <- meta$bg
 
   # sample metrics
-  x <- counts[!meta$bg, ]
-  samples <- bind_cols(samples,
+  x <- counts[!bg, ]
+  xbg <- counts[bg, ]
+  samples <- bind_cols(
+    samples,
+    # background metrics
+    bg_counts = colSums(xbg),
+    bg_cpm = 1e6 * colSums(xbg) / colSums(counts),
+    bg_geomean = apply(xbg, 2, geomean),
+    bg_median = apply(xbg, 2, stats::median),
+    bg_q3 = apply(xbg, 2, stats::quantile, 0.75),
+    bg_q95 = apply(xbg, 2, stats::quantile, 0.95),
+    bg_max = apply(xbg, 2, max),
+    bg_lod = apply(xbg, 2, stats::quantile, bg_lod_quantile),
+    # gene metrics
     num_counts = colSums(x),
+    complexity = apply(x, 2, function(x) length(unique(x))),
     count_mad = apply(x, 2, stats::mad),
     count_iqr = apply(x, 2, stats::IQR),
     count_geomean = apply(x, 2, geomean),
     count_median = apply(x, 2, stats::median),
     count_q3 = apply(x, 2, stats::quantile, 0.75),
+    count_q95 = apply(x, 2, stats::quantile, 0.95),
     count_max = apply(x, 2, max)
   ) %>% mutate(
     snr_geomean = count_geomean / bg_geomean,
     snr_median = count_median / bg_median,
-    snr_q3 = count_q3 / bg_q3
+    snr_q3 = count_q3 / bg_q3,
+    snr_q95 = count_q95 / bg_q95
   )
-  return(list(samples=samples, meta=meta, counts=counts))
+
+  # probes expressed over detection limit
+  x <- calc_frac_expr(counts, bg, samples$bg_lod)
+  samples$frac_expr <- x$s
+  meta$frac_expr <- x$g
+
+  # calculate AUC of gene vs background (negative probe)
+  calc_auc <- function(responses, predictors) {
+    myroc <- pROC::roc(responses, predictors, levels=c(TRUE, FALSE), direction="<")
+    myauc <- as.numeric(myroc$auc)
+    return(myauc)
+  }
+  bg_auc <- bind_cols(select(meta, bg), counts) %>%
+    summarize(across(-bg, ~ calc_auc(bg, .x))) %>%
+    unlist()
+  samples$bg_auc <- bg_auc
+
+  # KS test of gene vs background
+  bg_ks_dist <- NULL
+  bg_ks_pval <- NULL
+  for (i in 1:ncol(counts)) {
+    x <- unlist(counts[!bg, i])
+    xbg <- unlist(counts[bg, i])
+    res <- suppressWarnings(stats::ks.test(x, xbg, alternative="less"))
+    bg_ks_dist[i] <- res$statistic
+    bg_ks_pval[i] <- res$p.value
+  }
+  samples <- mutate(samples,
+    bg_ks_dist = bg_ks_dist,
+    bg_ks_pval = bg_ks_pval
+  )
+
+  # calculate probe quantiles relative to negative probes
+  bg_quants <- bind_cols(select(meta, bg), counts) %>%
+    reframe(across(-bg, ~ compute_quantiles_kde(.x, bg)))
+
+  return(list(samples=samples,
+              meta=meta,
+              counts=counts))
 }
 
 #'
@@ -274,25 +386,7 @@ st_geomx_merge_probes <- function(ds) {
 
 
 
-#'
-#' Remove AOIs with no valid counts
-#'
-#' @importFrom magrittr %>%
-#' @import dplyr
-#'
-#' @param ds list produced by st_geomx_merge_probes
-#' @returns list dataset
-#' @export
-st_geomx_rm_empty_aois <- function(ds) {
-  # initial filter of "empty" samples with essential zero counts
-  keep <- ds$samples$count_max > 1
-  fds <- list(
-    samples = filter(ds$samples, keep),
-    meta = ds$meta,
-    counts = ds$counts[, keep]
-  )
-  return(fds)
-}
+
 
 
 #'
@@ -341,10 +435,13 @@ st_geomx_set_thresholds <- function(ds,
 #' @returns list dataset
 #' @export
 st_geomx_filter <- function(ds) {
+  keep_genes <- ds$meta$keep & (!ds$meta$bg)
   fds <- list(
     samples = filter(ds$samples, keep),
-    meta = filter(ds$meta, keep),
-    counts = ds$counts[ds$meta$keep, ds$samples$keep]
+    meta = filter(ds$meta, keep_genes),
+    counts = ds$counts[keep_genes, ds$samples$keep],
+    bgmeta = filter(ds$meta, ds$meta$bg),
+    bgcounts = ds$counts[ds$meta$bg, ds$samples$keep]
   )
   return(fds)
 }
@@ -501,114 +598,7 @@ bgcorrect_qq <- function(x, bg, bw.adjust=1, bg.quant=0.5) {
 }
 
 
-bgcorrect_norm2 <- function(x, bg) {
-
-  x <- log2(x)
-  res <- cluster_noise(x, bg)
-  noise <- bg | res$noise
-
-  # x.gsd <- exp(sd(log(x[!noise])))
-  # x.gm <- exp(mean(log(x[!noise])))
-  #
-  # xbg.gsd <- exp(sd(log(x[noise])))
-  # xbg.gm <- exp(mean(log(x[noise])))
-  #
-  # a <- xbg.gsd^2 / x.gsd^2
-  # c <- a * x.gm - xbg.gm
-  # y <- (1-a)*x + c
-
-  a <- sd(x[noise])^2 / sd(x[!noise])^2
-  c <- a * mean(x[!noise]) - mean(x[noise])
-  y <- (1-a)*x + c
-  return(2^y)
-}
-
-
-bgcorrect_kdefdr <- function(x, bg, bw.adjust=1) {
-  x <- log2(x)
-  xmin <- min(x)
-  xmax <- max(x)
-  n <- 10000
-  eps <- 1e-10
-
-  # select bandwidth
-  bwbg <- bw.nrd0(x[bg]) * bw.adjust
-  bw <- bw.nrd0(x[!bg]) * bw.adjust
-  bw <- max(bw, bwbg)
-
-  d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
-  dcdf <- cumsum(d$y) / sum(d$y)
-
-  dbg <- density(x[bg], bw=bw, from=xmin, to=xmax, n=n)
-  dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
-  dbgcdf <- pmax(dbgcdf, dcdf)
-
-  dfdr <- (1-dbgcdf) / (1-dcdf+eps)
-  scaled_fdr <- xmin + (xmax - xmin) * cumsum(dfdr) / n
-  noise <- approx(d$x, scaled_fdr, xout=x)$y
-  noise <- pmin(noise, x)
-  y <- 2^x - 2^noise + 1
-
-  return(list(
-    y = y,
-    dx = d$x,
-    dy = d$y,
-    dbg = dbg$y,
-    dcdf = dcdf,
-    dbgcdf = dbgcdf,
-    scaled_fdr = scaled_fdr,
-    bw = bw,
-    eps = eps
-  ))
-}
-
-
-bgcorrect_kdefdr2 <- function(x, bg, bw.adjust=1, fdr.min=0.01) {
-  x <- log2(x)
-  xmin <- min(x)
-  xmax <- max(x)
-  n <- 10000
-  bw <- bw.nrd0(x) * bw.adjust
-  eps <- 1e-10
-
-  #res <- cluster_noise(x, bg)
-  noise <- bg
-  #noise <- bg | res$noise
-
-  d <- density(x[!noise], bw=bw, from=xmin, to=xmax, n=n)
-  dbg <- density(x[noise], bw=bw, from=xmin, to=xmax, n=n)
-
-  dcdf <- cumsum(d$y) / sum(d$y)
-  dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
-  dbgcdf <- pmax(dbgcdf, dcdf)
-
-  dfdr <- (1-dbgcdf) / (1-dcdf+eps)
-  dfdr <- pmin(1, dfdr + fdr.min)
-  scaled_fdr <- xmin + (xmax - xmin) * cumsum(dfdr) / n
-  scaled_fdr <- pmin(d$x, scaled_fdr)
-  xnoise <- approx(d$x, scaled_fdr, xout=x)$y
-  xnoise <- pmin(xnoise, x)
-  y <- 2^x - 2^xnoise + 1
-
-  #dfdr <- (1-dbgcdf) / (1-dcdf)
-  #dfdr[which(is.nan(dfdr))] <- min(dfdr[which(!is.nan(dfdr))])
-  #dfdr <- pmin(1, dfdr + fdr.min)
-
-  return(list(
-    y = y,
-    dx = d$x,
-    dy = d$y,
-    dbg = dbg$y,
-    dcdf = dcdf,
-    dbgcdf = dbgcdf,
-    scaled_fdr = scaled_fdr,
-    bw = bw,
-    fdr.min = fdr.min
-  ))
-}
-
-
-bgcorrect_kdeppv <- function(x, bg, bw.adjust=2, ppv.max=0.99) {
+bgcorrect_kdeppv <- function(x, bg, bw.adjust=2, bg.quant=0.5) {
   # setup
   eps <- 1e-10
   n <- 2^13
@@ -622,15 +612,21 @@ bgcorrect_kdeppv <- function(x, bg, bw.adjust=2, ppv.max=0.99) {
   bw.bg <- bw.nrd0(x[bg])
   bw <- max(bw.gene, bw.bg) * bw.adjust
 
-  d <- density(x[!bg], bw=bw, from=xmin, to=xmax, n=n)
-  dcdf <- cumsum(d$y) / sum(d$y)
-
+  d <- density(x[expressed], bw=bw, from=xmin, to=xmax, n=n)
   dbg <- density(x[bg], bw=bw, from=xmin, to=xmax, n=n)
+
+  dcdf <- cumsum(d$y) / sum(d$y)
   dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
 
+
+
+  # convert density to ecdf
+  dcdf <- cumsum(d$y) / sum(d$y)
+  dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
+
+  # calc false omission rate (FOR) as FN / PN
   dppv <- (1 - dcdf + eps) / (1 - dcdf + 1 - dbgcdf + eps)
-  dppv <- dppv - min(dppv)
-  dppv <- ppv.max * dppv / max(dppv)
+  dppv <- (dppv - min(dppv)) / (max(dppv) - min(dppv))
 
   # ensure isotonic behavior
   dppv.ir <- isoreg(d$x, dppv)$yf
@@ -648,16 +644,7 @@ bgcorrect_kdeppv <- function(x, bg, bw.adjust=2, ppv.max=0.99) {
     dp = dppv.ir,
     bw = bw,
     bw.adjust = bw.adjust,
-    ppv.max = ppv.max
-  ))
-
-  return(list(
-    y = y,
-    dx = d$x,
-    dcdf = dcdf,
-    dbgcdf = dbgcdf,
-    dp = dp.ir,
-    bw = bw
+    bg.quant = bg.quant
   ))
 }
 
@@ -719,8 +706,8 @@ bgcorrect_kdefor <- function(x, bg, bw.adjust=2, bg.quant=0.5) {
 #' @param ds list dataset
 #' @returns matrix of background corrected counts-per-million
 #' @export
-st_geomx_bgcorrect <- function(ds, method=c("qq", "norm", "bgsub", "kdeppv"),
-                               bw.adjust=1, bg.quant=0.5, ppv.max=0.99) {
+st_geomx_bgcorrect <- function(ds, method=c("qq", "norm", "bgsub", "kdeppv", "kdefor", "none"),
+                               bw.adjust=1, bg.quant=0.5) {
   bg <- ds$meta$bg
   x <- ds$counts
 
@@ -739,11 +726,17 @@ st_geomx_bgcorrect <- function(ds, method=c("qq", "norm", "bgsub", "kdeppv"),
     return(y)
   }
   apply_bgcorrect_kdeppv <- function(x) {
-    y <- bgcorrect_kdeppv(x, bg, bw.adjust=bw.adjust, ppv.max=ppv.max)$y
+    y <- bgcorrect_kdeppv(x, bg, bw.adjust=bw.adjust, bg.quant=bg.quant)$y
+    return(y)
+  }
+  apply_bgcorrect_kdefor <- function(x) {
+    y <- bgcorrect_kdefor(x, bg, bw.adjust=bw.adjust, bg.quant=bg.quant)$y
     return(y)
   }
 
-  if (method == "qq") {
+  if (method == "none") {
+    return(x)
+  } else if (method == "qq") {
     x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_qq)
   } else if (method == "norm") {
     x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_norm)
@@ -751,11 +744,120 @@ st_geomx_bgcorrect <- function(ds, method=c("qq", "norm", "bgsub", "kdeppv"),
     x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_bgsub)
   } else if (method == "kdeppv") {
     x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_kdeppv)
+  } else if (method == "kdefor") {
+    x <- apply(x, MARGIN=2, FUN=apply_bgcorrect_kdefor)
   } else {
     stop("method not found")
   }
   return(x)
 }
+
+
+#'
+#' tie-breaking quantile normalization
+#'
+#' @import dplyr
+#'
+#' @param x matrix of raw counts
+#' @returns matrix of normalized relative counts
+#'
+# tbqnorm <- function(x) {
+#   # convert to relative counts (counts-per-million)
+#   xcpm <- apply(x-1, 2, function(x) { 1e6 * x / sum(x) })
+#   # rank genes across samples by total relative expression
+#   global_ranks <- rank(rowSums(xcpm), ties.method="random")
+#   # use correlation to compute sample-sample similarity matrix
+#   xcor <- cor(xcpm, method="spearman")
+#   # exclude samples with negative correlation
+#   xcor[xcor < 0] <- NA
+#   # ordered list of nearest neighbors for each sample
+#   nn_list <- apply(xcor, 2, order, na.last=NA, decreasing=TRUE)
+#   # starting ranks (with ties present)
+#   xrank_init <- as.data.frame(apply(x, 2, rank, ties.method="min"))
+#   #xrank_init <- reframe(as_tibble(x), across(everything(), min_rank))
+#   # reordering procedure to break ties for each sample
+#   xrank <- matrix(nrow=nrow(x), ncol=ncol(x))
+#   for(i in 1:ncol(x)) {
+#     nn_ordered_cols <- xrank_init[, nn_list[,i]]
+#     nn_ordered_cols <- bind_cols(nn_ordered_cols, tiebrk_ranks=global_ranks)
+#     xrank[,i] <- do.call(order, unname(nn_ordered_cols))
+#   }
+#   # convert ordering to ranks
+#   xrank <- apply(xrank, 2, order)
+#
+#   # compute quantiles
+#   xquantiles <- apply(xcpm, 2, sort)
+#   xquantiles <- apply(xquantiles, 1, geomean)
+#   # renormalize quantiles such that columns sum to one million (e.g. cpm)
+#   xquantiles <- 1e6 * (xquantiles / sum(xquantiles))
+#   # apply quantile normalization procedure using new ranks
+#   xnorm <- apply(xrank, 2, function(x) { xquantiles[x] })
+# }
+
+# tbqnorm <- function(x,
+#                     final_tiebreak=c("random", "global"),
+#                     noise_weights=NULL,
+#                     noise_alpha=1,
+#                     smooth_alpha=0) {
+#   # parse arguments
+#   final_tiebreak <- match.arg(final_tiebreak)
+#
+#   # if weights not specified, make weights equal
+#   if (is.null(noise_weights)) {
+#     noise_weights <- rep(1, ncol(x))
+#   }
+#   noise_weights <- noise_weights ^ noise_alpha
+#
+#   # convert to relative counts (counts-per-million)
+#   xcpm <- apply(x-1, 2, function(x) { 1e6 * x / sum(x) })
+#
+#   # compute sample similarities
+#   #xquantiles <- apply(xcpm, 2, sort)
+#   #xsimilarity <- as.matrix(stats::dist(t(xquantiles), method="manhattan"))
+#   #xsimilarity <- 1 - (xsimilarity / (maxdist * 1e6))
+#
+#   # rank genes across samples by total relative expression
+#   global_ranks <- rank(rowSums(xcpm), ties.method="random")
+#
+#   # use correlation to compute sample-sample similarity matrix
+#   xcor <- cor(xcpm, method="spearman")
+#   # exclude samples with negative correlation
+#   xcor[xcor < 0] <- NA
+#   # ordered list of nearest neighbors for each sample
+#   nn_list <- apply(xcor, 2, order, na.last=NA, decreasing=TRUE)
+#
+#   # starting ranks (with ties present)
+#   xrank_init <- as.data.frame(apply(x, 2, rank, ties.method="min"))
+#   #xrank_init <- reframe(as_tibble(x), across(everything(), min_rank))
+#
+#   # reordering procedure to break ties for each sample
+#   xrank <- matrix(nrow=nrow(x), ncol=ncol(x))
+#   for(i in 1:ncol(x)) {
+#     # if unable to break ties using nearest neighbors will defer to
+#     # either global ranks or random ranks
+#     if (final_tiebreak == "global") {
+#       tiebrk_ranks <- global_ranks
+#     } else {
+#       tiebrk_ranks <- rank(xrank_init[,i], ties.method="random")
+#     }
+#     nn_ordered_cols <- xrank_init[, nn_list[[i]]]
+#     nn_ordered_cols <- bind_cols(nn_ordered_cols, tiebrk_ranks=tiebrk_ranks)
+#     xrank[,i] <- do.call(order, unname(nn_ordered_cols))
+#   }
+#   # convert ordering to ranks
+#   xrank <- apply(xrank, 2, order)
+#
+#   # compute weighted quantiles
+#   xquantiles <- apply(xcpm, 2, sort)
+#   xquantiles <- apply(xquantiles, 1, geomean)
+#   #xquantiles <- apply(xquantiles, 1, weighted_geomean, noise_weights)
+#   # renormalize quantiles such that columns sum to one million (e.g. cpm)
+#   xquantiles <- 1e6 * (xquantiles / sum(xquantiles))
+#
+#   # apply quantile normalization procedure using new ranks
+#   xnorm <- apply(xrank, 2, function(x) { xquantiles[x] })
+#   return(xnorm)
+# }
 
 
 #'
@@ -798,6 +900,78 @@ calc_norm_factors_rle <- function(data) {
   apply(data, 2, function(u) median((u/gm)[gm > 0]))
 }
 
+#'
+#' edgeR package
+#' TMM between two libraries
+#' Mark Robinson
+#' Copied from https://rdrr.io/bioc/edgeR/src/R/calcNormFactors.R
+#'
+calc_norm_factors_tmm <- function(x, logratioTrim=0.3, sumTrim=0.05, doWeighting=TRUE, Acutoff=-1e10) {
+
+  num_counts <- colSums(x)
+  f75 <- pmax(1, apply(x, 2, quantile, 0.75)) / num_counts
+  nsamples <- ncol(x)
+
+  # choose reference column to normalize against
+  if(median(f75) < 1e-20) {
+    refColumn <- which.max(colSums(sqrt(x)))
+  } else {
+    refColumn <- which.min(abs(f75-mean(f75)))
+  }
+  ref <- unlist(x[, refColumn])
+  nR <- num_counts[refColumn]
+
+  calc_factor_tmm <- function(i) {
+    obs <- unlist(x[, i])
+    nO <- num_counts[i]
+
+    logR <- log2((obs/nO)/(ref/nR))          # log ratio of expression, accounting for library size
+    absE <- (log2(obs/nO) + log2(ref/nR))/2  # absolute expression
+    v <- (nO-obs)/nO/obs + (nR-ref)/nR/ref   # estimated asymptotic variance
+
+    #	remove infinite values, cutoff based on A
+    fin <- is.finite(logR) & is.finite(absE) & (absE > Acutoff)
+
+    logR <- logR[fin]
+    absE <- absE[fin]
+    v <- v[fin]
+
+    if(max(abs(logR)) < 1e-6) return(1)
+
+    #	taken from the original mean() function
+    n <- length(logR)
+    loL <- floor(n * logratioTrim) + 1
+    hiL <- n + 1 - loL
+    loS <- floor(n * sumTrim) + 1
+    hiS <- n + 1 - loS
+
+    #	keep <- (rank(logR) %in% loL:hiL) & (rank(absE) %in% loS:hiS)
+    #	a fix from leonardo ivan almonacid cardenas, since rank() can return
+    #	non-integer values when there are a lot of ties
+    keep <- (rank(logR)>=loL & rank(logR)<=hiL) & (rank(absE)>=loS & rank(absE)<=hiS)
+
+    if(doWeighting) {
+      f <- sum(logR[keep]/v[keep], na.rm=TRUE) / sum(1/v[keep], na.rm=TRUE)
+    } else {
+      f <- mean(logR[keep], na.rm=TRUE)
+    }
+
+    #	Results will be missing if the two libraries share no features with positive counts
+    #	In this case, return unity
+    if(is.na(f)) f <- 0
+    2^f
+  }
+
+  nf <- rep_len(NA_real_, nsamples)
+  for(i in 1:nsamples) {
+    obs <- x[, i]
+    nO <- num_counts[i]
+    nf[i] <- calc_factor_tmm(i)
+  }
+  return(nf)
+}
+
+
 
 #'
 #' Normalization
@@ -809,21 +983,35 @@ calc_norm_factors_rle <- function(data) {
 #' @param method string normalization method
 #' @returns matrix of normalized counts
 #' @export
-st_geomx_normalize <- function(ds, x, method=c("qn", "rle", "cpm")) {
+st_geomx_normalize <- function(ds, x, method=c("qn", "rle", "cpm", "q3", "tmm", "none")) {
+  # check method
+  method <- match.arg(method)
 
-  if (method == "qn") {
+  if (method == "none") {
+    # do nothing
+    x <- x
+  } else if (method == "qn") {
     x <- normalize_quantile(cpm(x))
-  } else if (method == "rle") {
-    sf <- colSums(x) / 1e6
-    nf <- calc_norm_factors_rle(x) / sf
-    nf <- nf / geomean(nf)
-    x <- sweep(x, 2, sf * nf, FUN="/")
   } else if (method == "cpm") {
     x <- cpm(x)
   } else {
-    stop("method not found")
+    # both Q3, RLE, and TMM produce normalization factors
+    sf <- colSums(x) / 1e6
+
+    if (method == "rle") {
+      nf <- calc_norm_factors_rle(x) / sf
+
+    } else if (method == "q3") {
+      nf <- pmax(1, apply(x, 2, quantile, 0.75)) / sf
+    } else if (method == "tmm") {
+      nf <- calc_norm_factors_tmm(x)
+    }
+    # norm factors should multiply to 1
+    nf <- nf/exp(mean(log(nf)))
+    x <- sweep(x, 2, sf * nf, FUN="/")
   }
 
   rownames(x) <- ds$meta$gene
   return(x)
 }
+

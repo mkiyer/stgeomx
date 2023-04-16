@@ -59,7 +59,6 @@ geomx_mel_annot_xlsx <- file.path(geomx_dir, "mel_tma_annot_2022_10-25.xlsx")
 # human protein atlas melanoma signatures
 hpa_mel_prog_xlsx <- file.path(data_dir, "hpa_melanoma_prognostic.xlsx")
 
-
 # qc parameters
 geomx_negprobe_lod_quantile = 0.9
 geomx_min_counts = 1e6
@@ -92,8 +91,8 @@ if (!dir.exists(plot_dir)) {
 
 ```{r geomx data, include=FALSE}
 
-ds <- st_geomx_read(geomx_mel_xlsx)
-ds <- st_geomx_process_input(ds, geomx_negprobe_lod_quantile)
+ds <- st_geomx_read_xlsx(geomx_mel_xlsx)
+ds <- st_geomx_preprocess(ds, geomx_negprobe_lod_quantile)
 ds <- st_geomx_merge_probes(ds)
 
 # read and join sample annotation
@@ -339,9 +338,18 @@ Consolidate technical replicates. When sample has replicates, choose replicate w
 
 # choose replicate with highest snauc
 s <- ds$samples %>%
+  filter(keep == TRUE) %>%
   group_by(patient_sample) %>%
   slice_max(bg_auc, n=1) %>%
   ungroup()
+
+length(sort(table(s$patient_sample)))
+
+table(ds$samples$has_replicate, ds$samples$keep)
+length(unique(ds$samples$aoi))
+length(unique(s$aoi))
+table(s$keep)
+table(ds$samples$keep)
 
 fds <- list(samples = s,
             meta = ds$meta,
@@ -350,8 +358,9 @@ fds <- list(samples = s,
 # apply filters
 fds <- st_geomx_filter(fds)
 
+
 # bg correct
-#x <- fds$counts
+bgcorrect_method <- "bgsub"
 x <- st_geomx_bgcorrect(fds, 
                         method=bgcorrect_method,
                         bw.adjust=bgcorrect_bw_adjust, 
@@ -361,13 +370,12 @@ x <- st_geomx_bgcorrect(fds,
 #x <- st_geomx_bgcorrect(fds, method="kdeppv", bw.adjust=bw.adjust, ppv.max=ppv.max)
 
 # normalize
-#y_bg_rle <- st_geomx_normalize(fds, x, method="rle")
 y_bg_qn <- st_geomx_normalize(fds, x, method="qn")
+#y_bg_rle <- st_geomx_normalize(fds, x, method="rle")
 #y_bg_cpm <- st_geomx_normalize(fds, x, method="cpm")
 
 # choose normalized data to work with
 normcounts <- y_bg_qn
-
 
 length(unique(s$aoi))
 length(unique(fds$samples$patient))
@@ -377,8 +385,14 @@ table(fds$samples$sample_type)
 table(fds$samples$acral)
 
 # write gene expression data
-write_xlsx(ds$samples, file.path(working_dir, 'st_mel_roi_annot.xlsx'))
+write_xlsx(
+  list(unfiltered_samples = ds$samples,
+       filtered_samples = fds$samples,
+       norm_gene_expr = as_tibble(normcounts, rownames="gene")), 
+  file.path(working_dir, 'st_mel_roi_annot.xlsx')
+)
 
+write_xlsx(ds$samples, file.path(working_dir, 'st_mel_roi_annot.xlsx'))
 
 
 ```
@@ -834,6 +848,18 @@ ggsave(file.path(plot_dir, "de_volcano_os_q0_vs_q3.png"), p)
 
 # write gene expression data
 write_xlsx(de, file.path(working_dir, 'de_results_it.xlsx'))
+
+
+de_genes <- unique(filter(de, de != "no") %>% pull(gene))
+de_expr <- y[de_genes,]
+exprs <- bind_cols(s, t(de_expr))
+
+write_xlsx(
+  list(mel_it_de_genes = exprs),
+  file.path(working_dir, 'de_gene_expr.xlsx')
+)
+
+
 
 
 ```

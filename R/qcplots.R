@@ -2,7 +2,6 @@
 # Spatial Transcriptomics using NanoString GeoMx DSP
 #
 
-
 #'
 #' Set of plots to guide aoi filtering
 #'
