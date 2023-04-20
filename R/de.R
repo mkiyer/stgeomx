@@ -76,21 +76,21 @@ run_limma_trend <- function(y, design, contrasts, padj_cutoff, log2fc_cutoff) {
 
 
 
-plot_de_volcano <- function(res) {
-  # res <- res %>%
-  #   mutate(de = case_when(padj > 0.05 ~ "no",
-  #                         log2fc < 0 ~ "dn",
-  #                         log2fc > 0 ~ "up"))
+plot_de_volcano <- function(res, nlabel=50) {
+  # label the top n up/down genes
+  label_data <- bind_rows(filter(res, de == "up") %>% slice_max(log2fc, n=nlabel),
+                          filter(res, de == "dn") %>% slice_min(log2fc, n=nlabel))
+  label_data <- distinct(label_data)
+
   p <- ggplot(res, aes(x=log2fc, y=-log10(padj), color=de, size=de)) +
     geom_point(alpha=0.7) +
-    #    geom_text_repel(data=subset(res, de != "no"), color="black", size=3, aes(label=gene), max.overlaps=Inf) +
-    geom_text_repel(data=subset(res, de != "no"), color="black", size=3, aes(label=gene)) +
+    geom_text_repel(data=label_data, color="black", size=3, aes(label=gene), max.overlaps=Inf) +
     scale_color_manual(values=c("no"="grey", "dn"="blue", "up"="red")) +
     scale_size_manual(values=c("no"=1, "dn"=2, "up"=2)) +
     theme_minimal() +
     theme(legend.position="bottom") +
-    theme(axis.line = element_line(color = "black"))
-  labs(x="log2fc", y="-log10(padj)")
+    theme(axis.line = element_line(color = "black")) +
+    labs(x="log2fc", y="-log10(padj)")
   return(p)
 }
 

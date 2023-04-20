@@ -978,12 +978,11 @@ calc_norm_factors_tmm <- function(x, logratioTrim=0.3, sumTrim=0.05, doWeighting
 #'
 #' background subtraction and scale/quantile normalization
 #'
-#' @param ds list dataset
 #' @param x matrix of transformed counts
 #' @param method string normalization method
 #' @returns matrix of normalized counts
 #' @export
-st_geomx_normalize <- function(ds, x, method=c("qn", "rle", "cpm", "q3", "tmm", "none")) {
+st_geomx_normalize <- function(x, method=c("qn", "rle", "cpm", "q3", "tmm", "none")) {
   # check method
   method <- match.arg(method)
 
@@ -1011,7 +1010,6 @@ st_geomx_normalize <- function(ds, x, method=c("qn", "rle", "cpm", "q3", "tmm", 
     x <- sweep(x, 2, sf * nf, FUN="/")
   }
 
-  rownames(x) <- ds$meta$gene
   return(x)
 }
 
