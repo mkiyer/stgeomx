@@ -48,58 +48,58 @@
 #   return(x)
 # }
 
-
-run_limma_trend <- function(y, design, contrasts, padj_cutoff, log2fc_cutoff) {
-  fit <- lmFit(y, design)
-  fit <- contrasts.fit(fit, contrasts)
-  fit <- eBayes(fit, trend=TRUE)
-
-  x <- NULL
-  for (coef in colnames(contrasts)) {
-    res <- topTable(fit, coef=coef, number=Inf, sort.by="none")
-    res <- as_tibble(res, rownames="gene")
-    res <- res %>%
-      select(gene,
-             log2fc=logFC,
-             avgexpr=AveExpr,
-             pval=P.Value,
-             padj=adj.P.Val) %>%
-      mutate(de = case_when(padj > padj_cutoff ~ "no",
-                            log2fc < -log2fc_cutoff ~ "dn",
-                            log2fc > log2fc_cutoff ~ "up",
-                            TRUE ~ "no"),
-             contrast = coef)
-    x <- bind_rows(x, res)
-  }
-  return(x)
-}
-
-
-
-plot_de_volcano <- function(res, nlabel=50) {
-  # label the top n up/down genes
-  label_data <- bind_rows(filter(res, de == "up") %>% slice_max(log2fc, n=nlabel),
-                          filter(res, de == "dn") %>% slice_min(log2fc, n=nlabel))
-  label_data <- distinct(label_data)
-
-  p <- ggplot(res, aes(x=log2fc, y=-log10(padj), color=de, size=de)) +
-    geom_point(alpha=0.7) +
-    geom_text_repel(data=label_data, color="black", size=3, aes(label=gene), max.overlaps=Inf) +
-    scale_color_manual(values=c("no"="grey", "dn"="blue", "up"="red")) +
-    scale_size_manual(values=c("no"=1, "dn"=2, "up"=2)) +
-    theme_minimal() +
-    theme(legend.position="bottom") +
-    theme(axis.line = element_line(color = "black")) +
-    labs(x="log2fc", y="-log10(padj)")
-  return(p)
-}
-
-
-save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
-  stopifnot(!missing(x))
-  stopifnot(!missing(filename))
-  pdf(filename, width=width, height=height)
-  grid::grid.newpage()
-  grid::grid.draw(x$gtable)
-  dev.off()
-}
+#
+# run_limma_trend <- function(y, design, contrasts, padj_cutoff, log2fc_cutoff) {
+#   fit <- lmFit(y, design)
+#   fit <- contrasts.fit(fit, contrasts)
+#   fit <- eBayes(fit, trend=TRUE)
+#
+#   x <- NULL
+#   for (coef in colnames(contrasts)) {
+#     res <- topTable(fit, coef=coef, number=Inf, sort.by="none")
+#     res <- as_tibble(res, rownames="gene")
+#     res <- res %>%
+#       select(gene,
+#              log2fc=logFC,
+#              avgexpr=AveExpr,
+#              pval=P.Value,
+#              padj=adj.P.Val) %>%
+#       mutate(de = case_when(padj > padj_cutoff ~ "no",
+#                             log2fc < -log2fc_cutoff ~ "dn",
+#                             log2fc > log2fc_cutoff ~ "up",
+#                             TRUE ~ "no"),
+#              contrast = coef)
+#     x <- bind_rows(x, res)
+#   }
+#   return(x)
+# }
+#
+#
+#
+# plot_de_volcano <- function(res, nlabel=50) {
+#   # label the top n up/down genes
+#   label_data <- bind_rows(filter(res, de == "up") %>% slice_max(log2fc, n=nlabel),
+#                           filter(res, de == "dn") %>% slice_min(log2fc, n=nlabel))
+#   label_data <- distinct(label_data)
+#
+#   p <- ggplot(res, aes(x=log2fc, y=-log10(padj), color=de, size=de)) +
+#     geom_point(alpha=0.7) +
+#     geom_text_repel(data=label_data, color="black", size=3, aes(label=gene), max.overlaps=Inf) +
+#     scale_color_manual(values=c("no"="grey", "dn"="blue", "up"="red")) +
+#     scale_size_manual(values=c("no"=1, "dn"=2, "up"=2)) +
+#     theme_minimal() +
+#     theme(legend.position="bottom") +
+#     theme(axis.line = element_line(color = "black")) +
+#     labs(x="log2fc", y="-log10(padj)")
+#   return(p)
+# }
+#
+#
+# save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
+#   stopifnot(!missing(x))
+#   stopifnot(!missing(filename))
+#   pdf(filename, width=width, height=height)
+#   grid::grid.newpage()
+#   grid::grid.draw(x$gtable)
+#   dev.off()
+# }

@@ -1,0 +1,492 @@
+---
+title: "Background variation in technical replicates"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{methods}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+library(stgeomx)
+
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(limma)
+library(factoextra)
+library(umap)
+library(fgsea)
+library(msigdbr)
+
+library(patchwork)
+library(ggrepel)
+library(ggridges)
+library(pheatmap)
+```
+
+
+## Input files and parameter settings
+
+```{r input files, include=FALSE}
+
+# input directories
+base_dir <- "/Users/mkiyer/Library/CloudStorage/OneDrive-DukeUniversity/research/projects/st_methods"
+geomx_dir <- file.path(base_dir, "geomx", "gmb_wta_mel_tma")
+
+# output directories
+working_dir <- file.path(base_dir, "results")
+plot_dir <- file.path(working_dir, "plots")
+for (d in c(working_dir, plot_dir)) {
+  if (!dir.exists(d)) {
+    dir.create(d)
+  }
+}
+
+# melanoma tma wta data
+geomx_mel_xlsx <- file.path(geomx_dir, "mel_tma_wta_2022-10-25.xlsx")
+# sample annotation file
+geomx_mel_annot_xlsx <- file.path(geomx_dir, "mel_tma_annot_2022_10-25.xlsx")
+
+# qc parameters
+geomx_negprobe_lod_quantile = 0.9
+geomx_min_counts = 1e6
+geomx_min_auc = 0.70
+geomx_aoi_min_frac_expr = 0.2
+geomx_gene_min_frac_expr = 0.1
+
+# normalization
+bgcorrect_method = "qq"
+bgcorrect_bw_adjust = 5
+bgcorrect_bg_quant = 0.5
+norm_method = "qn"
+
+# de parameters
+de_padj_cutoff <- 0.05
+de_log2fc_cutoff <- 1
+
+# gsea params
+gsea_padj_cutoff <- 0.05
+gsea_log2fc_cutoff <- 1
+
+```
+
+# Read dataset
+
+```{r}
+
+ds <- stgeomx::read_xlsx(geomx_mel_xlsx)
+ds <- stgeomx::preprocess(ds, geomx_negprobe_lod_quantile)
+ds <- stgeomx::merge_probes(ds)
+
+# read and join sample annotation
+annot <- read_excel(geomx_mel_annot_xlsx) %>%
+  mutate(patient_sample = paste0(patient, "_", sample))
+ds$samples <- ds$samples %>% 
+  inner_join(annot, by="SegmentDisplayName")
+
+```
+
+
+
+## QC and filtering AOI / Genes
+
+```{r choose filtering thresholds}
+
+
+select(ds$samples, aoi, bg_auc) %>% arrange(desc(bg_auc))
+aois <- c("s04_r029_fullroi", "s06_r060_fullroi")
+
+x <- bind_cols(ds$meta, select(ds$counts, all_of(aois))) %>%
+  tidyr::pivot_longer(all_of(aois), names_to="aoi", values_to="value")
+
+ggplot(x, aes(x=value+1, y=aoi, fill=bg)) +
+  ggridges::stat_density_ridges(alpha=0.5, rel_min_height=0.01) + 
+  scale_x_log10()
+
+
+# x <- bind_cols(ds$meta, select(ds$counts, {{ aoi }}))
+
+sort(ds$samples$bg_auc, dec=TRUE)[1:10]
+sort(ds$samples$bg_auc)[1:10]
+
+aoi <- "s04_r064_fullroi"
+x <- unlist(ds$counts[, aoi])
+bg <- ds$meta$bg
+bw.adjust <- 2
+
+bg.quant <- 0.5
+bg.loq <- stats::quantile(x[bg], bg.quant)
+x <- pmax(0, x - bg.loq)
+
+# setup
+n <- 2^11
+xlog <- log2(x+1)
+
+# select bandwidth
+bwbg <- stats::bw.nrd0(xlog[bg]) * bw.adjust
+bw <- stats::bw.nrd0(xlog[!bg]) * bw.adjust
+bw <- max(bw, bwbg)
+
+xmin <- 0
+xmax <- max(xlog[!bg])
+xbgmax <- max(xlog[bg])
+
+# smooth ecdf functions for gene probes and neg probes
+d <- stats::density(xlog[!bg], bw=bw, n=n, from=0, to=xmax)
+dcdf <- cumsum(d$y) / sum(d$y)
+
+dbg <- stats::density(xlog[bg], bw=bw, n=n, from=0, to=xbgmax)
+dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
+
+q <- stats::approx(d$x, dcdf, xout=xlog, ties="ordered")$y
+log2noise <- stats::approx(dbgcdf, dbg$x, yleft=0, yright=xbgmax, rule=2, 
+                           xout=q, ties="ordered")$y
+
+xnew <- x - (2^log2noise - 1)
+
+
+noise <- 2^log2noise
+
+# isotonic reg fit and plot
+fit <- isoreg(d$x, -dbg$y/d$y)
+plot(d$x, -dbg$y/d$y, pch = 19, cex=0.1)
+points(fit$x, fit$yf, pch = 16, col = "blue")
+
+library(isotone)
+res <- gpava(d$x, -dbg$y/d$y, ties="tertiary")
+plot(res)
+res_p <- with(pituitary, gpava(age, size))
+
+
+
+q <- stats::approx(d$x, dcdf, xout=xlog, ties="ordered")$y
+q <- pmax(bg.quant, q)
+
+log2noise <- stats::approx(dbgcdf, dbg$x, xout=q, ties="ordered")$y
+#noise <- 2^log2noise
+
+plot(xlog, log2noise)
+
+
+# ensure noise is not greater than (x - 1)
+noise <- pmin(noise, x - 1)
+y <- x - noise
+# ensure ymin == 1
+y <- y - (min(y) - 1)
+# ensure isotonic behavior
+ir <- stats::isoreg(x, y)
+yf <- ir$yf[order(ir$ord)]
+
+res <- list(
+  y = y,
+  yf = yf,
+  noise = noise,
+  dx = d$x,
+  dy = d$y,
+  dcdf = dcdf,
+  dbgx = dbg$x,
+  dbgy = dbg$y,
+  dbgcdf = dbgcdf,
+  bw.adjust = bw.adjust,
+  bg.quant = bg.quant
+)
+
+
+
+d <- stats::density(xlog[!bg], bw=bw, n=n, from=xmin, to=xmax)
+dbg <- stats::density(xlog[bg], bw=bw, n=n, from=xmin, to=xmax)
+tbl <- tibble(
+  x = d$x,
+  y = d$y,
+  bg = dbg$y,
+  ymax = pmax(d$y, dbg$y),
+  lrbg = dbg$y / pmax(d$y, dbg$y)
+)
+
+
+
+
+
+s <- ds$samples
+s$count_unique <- apply(ds$counts, 2, function(x) { length(unique(x)) })
+
+ggplot(s, aes(x=num_counts, y=count_unique)) +
+  scale_x_log10() +
+  geom_point()
+
+ds <- st_geomx_set_thresholds(ds,
+                              min_counts = geomx_min_counts,
+                              min_auc = geomx_min_auc,
+                              aoi_min_frac_expr = geomx_aoi_min_frac_expr,
+                              gene_min_frac_expr = geomx_gene_min_frac_expr)
+
+table(ds$samples$keep)
+table(ds$meta$expressed)
+
+```
+
+## Replicates
+
+```{r}
+
+# choose samples with replicates
+s <- ds$samples %>%
+  group_by(patient_sample) %>%
+  filter(n() >= 2) %>%
+  ungroup()
+
+
+# pivot to compare replicates
+x <- s %>%
+  pivot_wider(id_cols = patient_sample,
+              names_from = replicate,
+              values_from = c(aoi, bg_auc, bg_ks_dist, bg_geomean, frac_expr, count_geomean, snr_geomean, num_counts))
+
+
+ggplot(x, aes(x=bg_auc_0, y=bg_auc_1)) +
+  geom_point() + 
+  geom_abline(slope=1, intercept=0)
+
+
+#
+# # pivot to compare replicates
+# x <- s %>%
+#   pivot_wider(id_cols = patient_sample,
+#               names_from = replicate,
+#               values_from = c(aoi, keep, bg_auc, bg_geomean, frac_expr, count_geomean, snr_geomean, num_counts))
+# x <- x %>%
+#   mutate(keep = case_when(keep_rep0 & keep_rep1 ~ "both",
+#                           keep_rep0 ~ "rep0",
+#                           keep_rep1 ~ "rep1",
+#                           TRUE ~ "none"))
+#
+# cor.test(x$num_counts_rep0, x$num_counts_rep1)
+# p <- ggplot(x, aes(x=num_counts_rep0, y=num_counts_rep1)) +
+#   geom_point(aes(color=keep)) +
+#   scale_color_manual(values = pals::cols25()) +
+#   geom_smooth(method='lm', formula= y~x) +
+#   geom_abline(slope=1, intercept=0, color='red', linetype='dashed') +
+#   scale_x_log10() +
+#   scale_y_log10() +
+#   theme_minimal()
+# p
+# f <- file.path(plot_dir, "qc_techrep_scatter_numcounts.pdf")
+# ggsave(f, plot=p, device="pdf")
+#
+# cor.test(x$bg_auc_rep0, x$bg_auc_rep1)
+# p <- ggplot(x, aes(x=bg_auc_rep0, y=bg_auc_rep1)) +
+#   geom_point(aes(color=keep)) +
+#   scale_color_manual(values = pals::cols25()) +
+#   geom_smooth(method='lm', formula= y~x) +
+#   geom_abline(slope=1, intercept=0, color='red', linetype='dashed') +
+#   theme_minimal()
+# p
+# f <- file.path(plot_dir, "qc_techrep_scatter_auc.pdf")
+# ggsave(f, plot=p, device="pdf")
+#
+# cor.test(x$frac_expr_rep0, x$frac_expr_rep1)
+# p <- ggplot(x, aes(x=frac_expr_rep0, y=frac_expr_rep1)) +
+#   geom_point(aes(color=keep)) +
+#   scale_color_manual(values = pals::cols25()) +
+#   geom_smooth(method='lm', formula= y~x) +
+#   geom_abline(slope=1, intercept=0, color='red', linetype='dashed') +
+#   theme_minimal()
+# p
+# f <- file.path(plot_dir, "qc_techrep_scatter_frac_expr.pdf")
+# ggsave(f, plot=p, device="pdf")
+#
+#
+# # correlation matrix
+# s0 <- s %>% filter(replicate == "rep0")
+# s1 <- s %>% filter(replicate == "rep1")
+# #s1 <- s %>% filter(replicate == "rep1", keep)
+# #s0 <- s %>% filter(replicate == "rep0", keep)
+# x0 <- ds$counts[, s0$aoi]
+# x1 <- ds$counts[, s1$aoi]
+# colnames(x0) <- s0$patient_sample
+# colnames(x1) <- s1$patient_sample
+# x <- cor(log2(x0), log2(x1), method = "spearman")
+#
+# y <- as_tibble(x, rownames="s0") %>%
+#   pivot_longer(s1$patient_sample, names_to="s1", values_to="cor") %>%
+#   mutate(techrep = s0 == s1,
+#          p0 = str_split_fixed(s0, "_", 2)[,1],
+#          p1 = str_split_fixed(s1, "_", 2)[,1],
+#          samepatient = p0 == p1,
+#          cond = case_when(techrep ~ "techrep",
+#                           samepatient ~ "samepatient",
+#                           TRUE ~ "differentpatient")
+#   )
+# y$cond <- factor(y$cond, levels=c("differentpatient", "samepatient", "techrep"))
+#
+#
+# # distribution of correlation
+# p <- ggplot(y, aes(x=cor, y=cond, fill=cond)) +
+#   stat_density_ridges(alpha=0.6, scale=3, quantile_lines=TRUE) +
+#   scale_color_manual(values = pals::cols25())
+# p
+# f <- file.path(plot_dir, "qc_techrep_ridge_by_cond.pdf")
+# ggsave(f, plot=p, device="pdf")
+#
+# # sort by condition
+# y <- y %>% arrange(cond, s0)
+#
+# # reorder correlation matrix by condition
+# x <- x[unique(y$s0), unique(y$s0)]
+# p <- pheatmap(x,
+#          color = pals::brewer.ylorrd(100),
+#          breaks = seq(0, 1, length.out=101),
+#          border_color = NA,
+#          cluster_rows = TRUE,
+#          cluster_cols = TRUE,
+#          fontsize_row=4,
+#          fontsize_col=4)
+# f <- file.path(plot_dir, "heatmap_techrep_cor_matrix.pdf")
+# save_pheatmap_pdf(p, filename=f, width=8, height=8)
+
+
+```
+
+
+
+## QC: AOI filtering
+
+```{r aoi filtering}
+
+# p <- st_geomx_plot_aoi_filter(ds, geomx_min_counts, geomx_min_auc, geomx_aoi_min_frac_expr)
+# p
+# ggsave(file.path(plot_dir, "qc_aoi_filter.pdf"), p)
+
+```
+
+## QC: gene filtering cutoff
+
+```{r plot gene fraction detectable above bg}
+
+# p <- st_geomx_plot_gene_filter(ds, geomx_gene_min_frac_expr)
+# p
+# ggsave(file.path(plot_dir, "qc_gene_filtering_fpr_auc.pdf"), p)
+
+```
+
+
+
+## QC: Examine technical replicates
+
+```{r technical replicates}
+# 
+# # make dataset with just technical replicates
+# s <- ds$samples %>%
+#   mutate(patient_sample = paste0(patient, "_", sample),
+#          replicate = paste0("rep", replicate)) %>%
+#   group_by(patient_sample) %>%
+#   filter(n() >=2) %>%
+#   ungroup() %>%
+#   arrange(patient_sample)
+# 
+# # pivot to compare replicates
+# x <- s %>%
+#   pivot_wider(id_cols = patient_sample, 
+#               names_from = replicate, 
+#               values_from = c(aoi, keep, bg_auc, bg_geomean, frac_expr, count_geomean, snr_geomean, num_counts))
+# x <- x %>%
+#   mutate(keep = case_when(keep_rep0 & keep_rep1 ~ "both",
+#                           keep_rep0 ~ "rep0",
+#                           keep_rep1 ~ "rep1",
+#                           TRUE ~ "none"))
+# 
+# cor.test(x$num_counts_rep0, x$num_counts_rep1)
+# p <- ggplot(x, aes(x=num_counts_rep0, y=num_counts_rep1)) +
+#   geom_point(aes(color=keep)) + 
+#   scale_color_manual(values = pals::cols25()) +
+#   geom_smooth(method='lm', formula= y~x) +
+#   geom_abline(slope=1, intercept=0, color='red', linetype='dashed') +
+#   scale_x_log10() +
+#   scale_y_log10() + 
+#   theme_minimal()
+# p
+# f <- file.path(plot_dir, "qc_techrep_scatter_numcounts.pdf")
+# ggsave(f, plot=p, device="pdf")
+# 
+# cor.test(x$bg_auc_rep0, x$bg_auc_rep1)
+# p <- ggplot(x, aes(x=bg_auc_rep0, y=bg_auc_rep1)) +
+#   geom_point(aes(color=keep)) + 
+#   scale_color_manual(values = pals::cols25()) +
+#   geom_smooth(method='lm', formula= y~x) +
+#   geom_abline(slope=1, intercept=0, color='red', linetype='dashed') +
+#   theme_minimal()
+# p
+# f <- file.path(plot_dir, "qc_techrep_scatter_auc.pdf")
+# ggsave(f, plot=p, device="pdf")
+# 
+# cor.test(x$frac_expr_rep0, x$frac_expr_rep1)
+# p <- ggplot(x, aes(x=frac_expr_rep0, y=frac_expr_rep1)) +
+#   geom_point(aes(color=keep)) + 
+#   scale_color_manual(values = pals::cols25()) + 
+#   geom_smooth(method='lm', formula= y~x) +
+#   geom_abline(slope=1, intercept=0, color='red', linetype='dashed') +
+#   theme_minimal()
+# p
+# f <- file.path(plot_dir, "qc_techrep_scatter_frac_expr.pdf")
+# ggsave(f, plot=p, device="pdf")
+# 
+# 
+# # correlation matrix
+# s0 <- s %>% filter(replicate == "rep0")
+# s1 <- s %>% filter(replicate == "rep1")
+# #s1 <- s %>% filter(replicate == "rep1", keep)
+# #s0 <- s %>% filter(replicate == "rep0", keep)
+# x0 <- ds$counts[, s0$aoi]
+# x1 <- ds$counts[, s1$aoi]
+# colnames(x0) <- s0$patient_sample
+# colnames(x1) <- s1$patient_sample
+# x <- cor(log2(x0), log2(x1), method = "spearman")
+# 
+# y <- as_tibble(x, rownames="s0") %>%
+#   pivot_longer(s1$patient_sample, names_to="s1", values_to="cor") %>%
+#   mutate(techrep = s0 == s1,
+#          p0 = str_split_fixed(s0, "_", 2)[,1],
+#          p1 = str_split_fixed(s1, "_", 2)[,1],
+#          samepatient = p0 == p1,
+#          cond = case_when(techrep ~ "techrep",
+#                           samepatient ~ "samepatient",
+#                           TRUE ~ "differentpatient")
+#   )
+# y$cond <- factor(y$cond, levels=c("differentpatient", "samepatient", "techrep"))
+# 
+# 
+# # distribution of correlation
+# p <- ggplot(y, aes(x=cor, y=cond, fill=cond)) +
+#   stat_density_ridges(alpha=0.6, scale=3, quantile_lines=TRUE) +
+#   scale_color_manual(values = pals::cols25())
+# p
+# f <- file.path(plot_dir, "qc_techrep_ridge_by_cond.pdf")
+# ggsave(f, plot=p, device="pdf")
+# 
+# # sort by condition
+# y <- y %>% arrange(cond, s0)
+# 
+# # reorder correlation matrix by condition
+# x <- x[unique(y$s0), unique(y$s0)]
+# p <- pheatmap(x,
+#          color = pals::brewer.ylorrd(100),
+#          breaks = seq(0, 1, length.out=101),
+#          border_color = NA,
+#          cluster_rows = TRUE,
+#          cluster_cols = TRUE,
+#          fontsize_row=4,
+#          fontsize_col=4)
+# f <- file.path(plot_dir, "heatmap_techrep_cor_matrix.pdf")
+# save_pheatmap_pdf(p, filename=f, width=8, height=8)
+
+
+```
+
+
+

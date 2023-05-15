@@ -1,23 +1,40 @@
 Type: Package
 Package: stgeomx
-Title: What the Package Does (Title Case)
+Title: Nanostring GeoMx DSP RNA Data Processing and Analysis
 Version: 0.1.0
 Author: Matthew Iyer
-Maintainer: Matthew Iyer <yourself@somewhere.net>
+Maintainer: Matthew Iyer <matthew.iyer@duke.edu>
 Description: More about what it does (maybe more than one line) Use four
     spaces when indenting paragraphs within the Description.
 License: MIT + file LICENSE
 Imports: 
     dplyr,
+    ggplot2,
     magrittr,
+    pals,
+    patchwork,
     pROC,
-    readxl
+    readr,
+    readxl,
+    rlang,
+    stringr,
+    tidyr
 Encoding: UTF-8
 LazyData: true
 RoxygenNote: 7.2.3
 Suggests: 
+    factoextra,
+    fgsea,
+    ggrepel,
+    ggridges,
     knitr,
+    limma,
+    msigdbr,
+    pheatmap,
     rmarkdown,
-    testthat (>= 3.0.0)
+    testthat (>= 3.0.0),
+    tidyverse,
+    umap,
+    writexl
 VignetteBuilder: knitr
 Config/testthat/edition: 3
