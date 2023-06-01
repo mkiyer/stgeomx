@@ -56,8 +56,8 @@ geomx_mel_annot_xlsx <- file.path(geomx_dir, "mel_tma_annot_2022_10-25.xlsx")
 # qc parameters
 geomx_negprobe_lod_quantile = 0.9
 geomx_min_counts = 1e6
-geomx_min_auc = 0.70
-geomx_aoi_min_frac_expr = 0.2
+geomx_min_auc = 0.65
+geomx_aoi_min_frac_expr = 0.25
 geomx_gene_min_frac_expr = 0.1
 
 # normalization
@@ -78,11 +78,9 @@ gsea_log2fc_cutoff <- 1
 
 # Read dataset
 
-```{r}
+```{r read data}
 
 ds <- stgeomx::read_xlsx(geomx_mel_xlsx)
-ds <- stgeomx::preprocess(ds, geomx_negprobe_lod_quantile)
-ds <- stgeomx::merge_probes(ds)
 
 # read and join sample annotation
 annot <- read_excel(geomx_mel_annot_xlsx) %>%
@@ -92,133 +90,18 @@ ds$samples <- ds$samples %>%
 
 ```
 
+## Process dataset
 
+```{r process data}
 
-## QC and filtering AOI / Genes
+ds <- stgeomx::preprocess(ds, geomx_negprobe_lod_quantile)
+ds <- stgeomx::merge_probes(ds)
 
-```{r choose filtering thresholds}
+```
 
+## QC: Filter AOIs
 
-select(ds$samples, aoi, bg_auc) %>% arrange(desc(bg_auc))
-aois <- c("s04_r029_fullroi", "s06_r060_fullroi")
-
-x <- bind_cols(ds$meta, select(ds$counts, all_of(aois))) %>%
-  tidyr::pivot_longer(all_of(aois), names_to="aoi", values_to="value")
-
-ggplot(x, aes(x=value+1, y=aoi, fill=bg)) +
-  ggridges::stat_density_ridges(alpha=0.5, rel_min_height=0.01) + 
-  scale_x_log10()
-
-
-# x <- bind_cols(ds$meta, select(ds$counts, {{ aoi }}))
-
-sort(ds$samples$bg_auc, dec=TRUE)[1:10]
-sort(ds$samples$bg_auc)[1:10]
-
-aoi <- "s04_r064_fullroi"
-x <- unlist(ds$counts[, aoi])
-bg <- ds$meta$bg
-bw.adjust <- 2
-
-bg.quant <- 0.5
-bg.loq <- stats::quantile(x[bg], bg.quant)
-x <- pmax(0, x - bg.loq)
-
-# setup
-n <- 2^11
-xlog <- log2(x+1)
-
-# select bandwidth
-bwbg <- stats::bw.nrd0(xlog[bg]) * bw.adjust
-bw <- stats::bw.nrd0(xlog[!bg]) * bw.adjust
-bw <- max(bw, bwbg)
-
-xmin <- 0
-xmax <- max(xlog[!bg])
-xbgmax <- max(xlog[bg])
-
-# smooth ecdf functions for gene probes and neg probes
-d <- stats::density(xlog[!bg], bw=bw, n=n, from=0, to=xmax)
-dcdf <- cumsum(d$y) / sum(d$y)
-
-dbg <- stats::density(xlog[bg], bw=bw, n=n, from=0, to=xbgmax)
-dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
-
-q <- stats::approx(d$x, dcdf, xout=xlog, ties="ordered")$y
-log2noise <- stats::approx(dbgcdf, dbg$x, yleft=0, yright=xbgmax, rule=2, 
-                           xout=q, ties="ordered")$y
-
-xnew <- x - (2^log2noise - 1)
-
-
-noise <- 2^log2noise
-
-# isotonic reg fit and plot
-fit <- isoreg(d$x, -dbg$y/d$y)
-plot(d$x, -dbg$y/d$y, pch = 19, cex=0.1)
-points(fit$x, fit$yf, pch = 16, col = "blue")
-
-library(isotone)
-res <- gpava(d$x, -dbg$y/d$y, ties="tertiary")
-plot(res)
-res_p <- with(pituitary, gpava(age, size))
-
-
-
-q <- stats::approx(d$x, dcdf, xout=xlog, ties="ordered")$y
-q <- pmax(bg.quant, q)
-
-log2noise <- stats::approx(dbgcdf, dbg$x, xout=q, ties="ordered")$y
-#noise <- 2^log2noise
-
-plot(xlog, log2noise)
-
-
-# ensure noise is not greater than (x - 1)
-noise <- pmin(noise, x - 1)
-y <- x - noise
-# ensure ymin == 1
-y <- y - (min(y) - 1)
-# ensure isotonic behavior
-ir <- stats::isoreg(x, y)
-yf <- ir$yf[order(ir$ord)]
-
-res <- list(
-  y = y,
-  yf = yf,
-  noise = noise,
-  dx = d$x,
-  dy = d$y,
-  dcdf = dcdf,
-  dbgx = dbg$x,
-  dbgy = dbg$y,
-  dbgcdf = dbgcdf,
-  bw.adjust = bw.adjust,
-  bg.quant = bg.quant
-)
-
-
-
-d <- stats::density(xlog[!bg], bw=bw, n=n, from=xmin, to=xmax)
-dbg <- stats::density(xlog[bg], bw=bw, n=n, from=xmin, to=xmax)
-tbl <- tibble(
-  x = d$x,
-  y = d$y,
-  bg = dbg$y,
-  ymax = pmax(d$y, dbg$y),
-  lrbg = dbg$y / pmax(d$y, dbg$y)
-)
-
-
-
-
-
-s <- ds$samples
-s$count_unique <- apply(ds$counts, 2, function(x) { length(unique(x)) })
-
-ggplot(s, aes(x=num_counts, y=count_unique)) +
-  scale_x_log10() +
-  geom_point()
+```{r qc filter aoi}
 
 ds <- st_geomx_set_thresholds(ds,
                               min_counts = geomx_min_counts,
@@ -226,8 +109,71 @@ ds <- st_geomx_set_thresholds(ds,
                               aoi_min_frac_expr = geomx_aoi_min_frac_expr,
                               gene_min_frac_expr = geomx_gene_min_frac_expr)
 
-table(ds$samples$keep)
-table(ds$meta$expressed)
+p <- stgeomx::plot_aoi_filter(ds, 
+                         min_counts=geomx_min_counts,
+                         min_auc=geomx_min_auc,
+                         min_frac_expr=geomx_aoi_min_frac_expr)
+p
+w <- 12
+h <- 8
+f <- file.path(plot_dir, "qc_aoi_filter")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+```
+
+
+## QC: Filter genes
+
+```{r qc filter genes}
+
+p <- stgeomx::plot_gene_filter(ds, geomx_gene_min_frac_expr)
+p
+w <- 8
+h <- 8
+f <- file.path(plot_dir, "qc_gene_filter")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+```
+
+
+## BG correction
+
+```{r background correction}
+
+x <- stgeomx::bgcorrect(ds, method="qq", bgcorrect_bw_adjust, bgcorrect_bg_quant)
+p <- plot_bgcorrect2(ds, x)
+p
+w <- 8
+h <- 8
+f <- file.path(plot_dir, "qc_bgcorrect")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+```
+
+## Normalization
+
+```{r normalization}
+
+
+sort(ds$samples$bg_auc, dec=TRUE)
+plot_aoi_qc(ds, "s04_r030_fullroi")
+stgeomx::plot_expr_dist(ds, y)
+
+
+quantiles=c(0.25, 0.5, 0.75, 0.90, 0.95, 0.99)
+quant_names <- paste0("q", round(100 * quantiles))
+bg.lod.quantile <- geomx_negprobe_lod_quantile
+x <- stgeomx::bgcorrect(ds, method="qq", bgcorrect_bw_adjust, bgcorrect_bg_quant)
+y <- log2(cpm(x)+1)
+
+y <- log2(cpm(ds$counts)+1)
+
+stgeomx::plot_expr_dist(ds, y)
+
+
 
 ```
 
@@ -355,26 +301,6 @@ ggplot(x, aes(x=bg_auc_0, y=bg_auc_1)) +
 
 
 
-## QC: AOI filtering
-
-```{r aoi filtering}
-
-# p <- st_geomx_plot_aoi_filter(ds, geomx_min_counts, geomx_min_auc, geomx_aoi_min_frac_expr)
-# p
-# ggsave(file.path(plot_dir, "qc_aoi_filter.pdf"), p)
-
-```
-
-## QC: gene filtering cutoff
-
-```{r plot gene fraction detectable above bg}
-
-# p <- st_geomx_plot_gene_filter(ds, geomx_gene_min_frac_expr)
-# p
-# ggsave(file.path(plot_dir, "qc_gene_filtering_fpr_auc.pdf"), p)
-
-```
-
 
 
 ## QC: Examine technical replicates
@@ -488,5 +414,65 @@ ggplot(x, aes(x=bg_auc_0, y=bg_auc_1)) +
 
 ```
 
+
+## Develop bgcorrect
+
+```{r bgcorrect devel}
+
+bg <- ds$meta$bg
+bg.loq <- stats::quantile(x[bg], bg.quant)
+x <- pmax(0, x - bg.loq)
+
+# setup
+n <- 2^11
+xlog <- log2(x+1)
+
+# select bandwidth
+bwbg <- stats::bw.nrd0(xlog[bg]) * bw.adjust
+bw <- stats::bw.nrd0(xlog[!bg]) * bw.adjust
+bw <- max(bw, bwbg)
+
+xmin <- 0
+xmax <- max(xlog[!bg])
+xbgmax <- max(xlog[bg])
+
+# smooth ecdf functions for gene probes and neg probes
+d <- stats::density(xlog[!bg], bw=bw, n=n, from=0, to=xmax)
+dcdf <- cumsum(d$y) / sum(d$y)
+
+dbg <- stats::density(xlog[bg], bw=bw, n=n, from=0, to=xbgmax)
+dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
+
+q <- stats::approx(d$x, dcdf, xout=xlog, ties="ordered")$y
+log2noise <- stats::approx(dbgcdf, dbg$x, yleft=0, yright=xbgmax, rule=2, 
+                           xout=q, ties="ordered")$y
+
+xnew <- x - (2^log2noise - 1)
+
+
+
+noise <- 2^log2noise
+
+# isotonic reg fit and plot
+fit <- isoreg(d$x, -dbg$y/d$y)
+plot(d$x, -dbg$y/d$y, pch = 19, cex=0.1)
+points(fit$x, fit$yf, pch = 16, col = "blue")
+
+library(isotone)
+res <- gpava(d$x, -dbg$y/d$y, ties="tertiary")
+plot(res)
+res_p <- with(pituitary, gpava(age, size))
+
+
+
+q <- stats::approx(d$x, dcdf, xout=xlog, ties="ordered")$y
+q <- pmax(bg.quant, q)
+
+log2noise <- stats::approx(dbgcdf, dbg$x, xout=q, ties="ordered")$y
+#noise <- 2^log2noise
+
+plot(xlog, log2noise)
+
+```
 
 

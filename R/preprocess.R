@@ -40,7 +40,8 @@ compute_quantiles_kde <- function(x, bg, bw.adjust=2) {
   dbg <- stats::density(xlog[bg], bw=bw, n=n)
   dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
   # find bg quantiles
-  q <- stats::approx(dbg$x, dbgcdf, xout=xlog, yleft=0, yright=1, ties="ordered")$y
+  q <- stats::approx(dbg$x, dbgcdf, xout=xlog,
+                     yleft=0, yright=1, rule=2, ties="ordered")$y
   return(q)
 }
 
