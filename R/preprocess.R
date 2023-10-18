@@ -33,11 +33,13 @@ geomean <- function(x) {
 compute_quantiles_kde <- function(x, bg, bw.adjust=2) {
   # setup
   n <- 2^13
-  xlog <- log2(x)
+  xlog <- log2(x+1)
+  xmin <- 0
+  xbgmax <- max(xlog[bg])
   # select bandwidth
-  bw <- stats::bw.nrd0(xlog[bg]) * bw.adjust
-  # smooth ecdf function for neg probes
-  dbg <- stats::density(xlog[bg], bw=bw, n=n)
+  bwbg <- stats::bw.nrd0(xlog[bg]) * bw.adjust
+  # smooth ecdf functions for neg probes
+  dbg <- stats::density(xlog[bg], bw=bwbg, n=n, from=0, to=xbgmax)
   dbgcdf <- cumsum(dbg$y) / sum(dbg$y)
   # find bg quantiles
   q <- stats::approx(dbg$x, dbgcdf, xout=xlog,
@@ -54,8 +56,8 @@ compute_quantiles_kde <- function(x, bg, bw.adjust=2) {
 #
 calc_bg_quantiles <- function(ds) {
   # calculate probe quantiles relative to negative probes
-  bg_quants <- bind_cols(select(ds$meta, bg), ds$counts) %>%
-    reframe(across(-bg, ~ compute_quantiles_kde(.x, bg)))
+  bg_quants <- bind_cols(select(ds$meta, "bg"), ds$counts) %>%
+    reframe(across(-"bg", ~ compute_quantiles_kde(.x, .data$bg)))
   return(bg_quants)
 }
 
@@ -68,15 +70,16 @@ calc_bg_quantiles <- function(ds) {
 #'
 #' @param ds list produced by st_geomx_merge_probes
 #' @param min_count integer count threshold for removing aoi
-#' @returns list dataset
+#' @returns dataset
 remove_empty_aois <- function(ds, min_count = 1) {
   # initial filter of "empty" samples with essential zero counts
   count_max = apply(ds$counts, 2, max)
   keep <- count_max > min_count
-  fds <- list(
+  fds <- stgeomx::init(
     samples = filter(ds$samples, keep),
     meta = ds$meta,
-    counts = ds$counts[, keep]
+    counts = ds$counts[, keep],
+    x = ds$x[, keep]
   )
   return(fds)
 }
@@ -89,7 +92,9 @@ remove_empty_aois <- function(ds, min_count = 1) {
 #' @importFrom magrittr %>%
 #' @import dplyr
 #'
-#' @param ds dataset
+#' @param samples tibble of sample information
+#' @param meta tibble of gene metadata
+#' @param counts tibble of count data
 #' @param bg_lod_quantile number (0.0-1.0)
 #' @returns samples tibble with added qc columns
 calc_qc_metrics <- function(samples, meta, counts, bg_lod_quantile) {
@@ -163,8 +168,8 @@ calc_snauc <- function(meta, counts) {
     myauc <- as.numeric(myroc$auc)
     return(myauc)
   }
-  bg_auc <- bind_cols(select(meta, bg), counts) %>%
-    summarize(across(-bg, ~ calc_roi_auc(bg, .x))) %>%
+  bg_auc <- bind_cols(select(meta, "bg"), counts) %>%
+    summarize(across(-"bg", ~ calc_roi_auc(.data$bg, .x))) %>%
     unlist()
   return(bg_auc)
 }
@@ -229,10 +234,15 @@ preprocess <- function(ds, bg_lod_quantile=0.9) {
   samples$keep <- TRUE
   meta$keep <- TRUE
 
-  return(list(samples=samples,
-              meta=meta,
-              counts=counts))
+  ds <- stgeomx::init(
+    samples = samples,
+    meta = meta,
+    counts = counts,
+    x = counts
+  )
+  return(ds)
 }
+
 
 #'
 #' Merge multiple probes per gene
@@ -247,7 +257,7 @@ preprocess <- function(ds, bg_lod_quantile=0.9) {
 merge_probes <- function(ds) {
   # convenience function for geomean
   geomean_fast <- function(x) {
-    ifelse(length(x) == 1, x, exp(mean(log(x))))
+    ifelse(length(x) == 1, x, 2^(mean(log2(x+1))))
   }
 
   # do not merge the negative probes, instead just move the probe name
@@ -280,9 +290,12 @@ merge_probes <- function(ds) {
   meta <- y %>% select(-colnames(ds$counts))
   counts <- y %>% select(colnames(ds$counts))
 
-  ds <- list(samples=ds$samples,
-             meta=bind_rows(meta, bgmeta),
-             counts=bind_rows(counts, bgcounts))
+  ds <- stgeomx::init(
+    samples = ds$samples,
+    meta = bind_rows(meta, bgmeta),
+    counts = bind_rows(counts, bgcounts),
+    x = bind_rows(counts, bgcounts)
+  )
   return(ds)
 }
 
@@ -310,11 +323,11 @@ merge_probes <- function(ds) {
 #' @param gene_min_frac_expr number minimum frac of samples expressing gene
 #' @returns list dataset
 #' @export
-st_geomx_set_thresholds <- function(ds,
-                                    min_counts = 0,
-                                    min_auc = 0.5,
-                                    aoi_min_frac_expr = 0.0,
-                                    gene_min_frac_expr = 0.0) {
+set_thresholds <- function(ds,
+                           min_counts = 0,
+                           min_auc = 0.5,
+                           aoi_min_frac_expr = 0.0,
+                           gene_min_frac_expr = 0.0) {
   # apply filtering parameters to samples
   ds$samples <- ds$samples %>% mutate(
     keep = ((.data$num_counts > min_counts) &
@@ -333,23 +346,22 @@ st_geomx_set_thresholds <- function(ds,
 
 
 #'
-#' Filter AOIs based on thresholds set by st_geomx_filter_thresholds
+#' Filter AOIs based on thresholds set by set_thresholds function
 #'
 #' @importFrom magrittr %>%
 #' @import dplyr
 #' @import rlang
 #'
-#' @param ds list dataset produced by st_geomx_filter_thresholds
+#' @param ds list dataset produced by set_thresholds
 #' @returns list dataset
 #' @export
-st_geomx_filter <- function(ds) {
+apply_filters <- function(ds) {
   keep_genes <- ds$meta$keep & (!ds$meta$bg)
-  fds <- list(
+  fds <- stgeomx::init(
     samples = filter(ds$samples, .data$keep),
     meta = filter(ds$meta, keep_genes),
     counts = ds$counts[keep_genes, ds$samples$keep],
-    bgmeta = filter(ds$meta, ds$meta$bg),
-    bgcounts = ds$counts[ds$meta$bg, ds$samples$keep]
+    x = ds$x[keep_genes, ds$samples$keep]
   )
   return(fds)
 }

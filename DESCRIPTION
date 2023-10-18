@@ -17,6 +17,7 @@ Imports:
     readr,
     readxl,
     rlang,
+    scales,
     stringr,
     tidyr
 Encoding: UTF-8

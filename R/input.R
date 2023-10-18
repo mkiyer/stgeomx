@@ -56,9 +56,8 @@ prepare_input <- function(samples, counts,
   colnames(counts) <- samples$aoi
   stopifnot(all(samples$aoi == colnames(counts)))
 
-  ds <- list(samples=samples,
-             meta=meta,
-             counts=counts)
+  # create dataset
+  ds <- stgeomx::init(samples, meta, counts, counts)
   return(ds)
 }
 

@@ -1,0 +1,135 @@
+---
+title: "soa"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{soa}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(stgeomx)
+```
+
+## Vignette-specific functions
+
+```{r vignette functions}
+
+add_study_field <- function(ds, study) {
+  s <- ds$samples
+  s$study <- study
+  s <- s %>% mutate(patient = sprintf("%s_%s", study, patient),
+                    slide = sprintf("%s_%s", study, slide),
+                    roi = sprintf("%s_%s", study, roi),
+                    aoi = sprintf("%s_%s", study, aoi))
+  colnames(ds$counts) <- s$aoi
+  return(list(samples = s, meta = ds$meta, counts = ds$counts))
+}
+
+merge_ds <- function(a, b) {
+  # merge sample tables
+  sample_cols <- intersect(colnames(a$samples), colnames(b$samples))
+  s <- bind_rows(select(a$samples, all_of(sample_cols)),
+                 select(b$samples, all_of(sample_cols)))
+  # merge count data
+  a_counts <- bind_cols(select(a$meta, probe, gene, bg), a$counts)
+  b_counts <- bind_cols(select(b$meta, probe, gene, bg), b$counts)
+  counts <- inner_join(a_counts, b_counts, by=c("probe", "gene", "bg"),
+                       relationship="one-to-one")
+  # break into metadata and count data
+  meta <- select(counts, -all_of(s$aoi))
+  counts <- select(counts, all_of(s$aoi))
+  
+  # make new dataset object
+  ds <- stgeomx::init(samples=s, meta=meta, counts=counts, x=counts)
+  return(ds)
+}
+
+```
+
+## Input files and parameter settings
+
+```{r input files, include=FALSE}
+
+# input directories
+base_dir <- "/Users/mkiyer/Library/CloudStorage/OneDrive-DukeUniversity/research/projects/st_methods"
+geomx_dir <- file.path(base_dir, "geomx", "spatial_organ_atlas")
+
+# output directories
+working_dir <- file.path(base_dir, "results")
+plot_dir <- file.path(working_dir, "plots")
+for (d in c(working_dir, plot_dir)) {
+  if (!dir.exists(d)) {
+    dir.create(d)
+  }
+}
+
+# spatial organ atlas data
+geomx_brain_xlsx <- file.path(geomx_dir, "spatial_organ_atlas_brain.xlsx")
+geomx_colon_xlsx <- file.path(geomx_dir, "spatial_organ_atlas_colon.xlsx")
+geomx_kidney_xlsx <- file.path(geomx_dir, "spatial_organ_atlas_kidney.xlsx")
+geomx_lymph_node_xlsx <- file.path(geomx_dir, "spatial_organ_atlas_lymph_node.xlsx")
+geomx_pancreas_xlsx <- file.path(geomx_dir, "spatial_organ_atlas_pancreas.xlsx")
+
+# qc parameters
+geomx_negprobe_lod_quantile = 0.9
+geomx_min_counts = 1e6
+geomx_min_auc = 0.65
+geomx_aoi_min_frac_expr = 0.25
+geomx_gene_min_frac_expr = 0.1
+
+# normalization
+bgcorrect_method = "qq"
+bgcorrect_bw_adjust = 5
+bgcorrect_bg_quant = 0.5
+norm_method = "qn"
+
+# de parameters
+de_padj_cutoff <- 0.05
+de_log2fc_cutoff <- 1
+
+# gsea params
+gsea_padj_cutoff <- 0.05
+gsea_log2fc_cutoff <- 1
+
+```
+
+# Read and merge datasets
+
+```{r read data}
+
+ds_brain <- stgeomx::read_xlsx(geomx_brain_xlsx)
+
+colnames(ds_brain$samples)
+
+ds_brain <- add_study_field(stgeomx::read_xlsx(geomx_brain_xlsx), "brain")
+
+ds_colon <- stgeomx::read_xlsx(geomx_colon_xlsx)
+ds_kidney <- stgeomx::read_xlsx(geomx_kidney_xlsx)
+ds_lymph_node <- stgeomx::read_xlsx(geomx_lymph_node_xlsx)
+ds_pancreas <- stgeomx::read_xlsx(geomx_pancreas_xlsx)
+
+# merge datasets
+ds <- merge_ds(add_study_field(ds_brain, "brain"), 
+               add_study_field(ds_colon, "colon"))
+
+ds <- merge_ds(ds, add_study_field(donor_ds, "donor"))
+#ds <- merge_ds(ds, add_study_field(broad_pdac_ds, "broad_pdac"))
+
+
+
+
+
+```
+
+
+
+
+

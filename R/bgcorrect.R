@@ -42,8 +42,9 @@ bgcorrect_qq <- function(x, bg, bw.adjust=1, bg.quant=0.5) {
   # map quantiles to background probes
   log2noise <- stats::approx(dbgcdf, dbg$x, yleft=0, yright=xbgmax, rule=2,
                              xout=q, ties="ordered")$y
-  # convert from log2 to linear scale and round to discrete counts
-  noise <- round(2^log2noise - 1)
+  # convert from log2 to linear scale and round up to discrete counts
+  noise <- ceiling(2^log2noise - 1)
+  #noise <- ceiling(2^log2noise - 1)
   # ensure noise is not greater than x
   noise <- pmin(noise, x)
   y <- x - noise
@@ -59,7 +60,6 @@ bgcorrect_qq <- function(x, bg, bw.adjust=1, bg.quant=0.5) {
     bg.quant = bg.quant,
     bg.loq = bg.loq,
     bw = bw,
-#    y = yf,
     y = y,
     noise = noise,
     dx = d$x,
@@ -75,28 +75,27 @@ bgcorrect_qq <- function(x, bg, bw.adjust=1, bg.quant=0.5) {
 #'
 #' Background correction
 #'
-#' @param ds list dataset
+#' @param ds stgeomx dataset
 #' @param method correction method to choose from
 #' @param bw.adjust bandwidth adjustment factor
 #' @param bg.quant background subtraction quantile
-#' @returns matrix of background corrected counts-per-million
+#' @returns stgeomx dataset
 #' @export
 bgcorrect <- function(ds, method=c("qq", "bgsub", "none"),
                       bw.adjust=1, bg.quant=0.5) {
-
   # check method
   method <- match.arg(method)
   bg <- ds$meta$bg
   x <- ds$counts
 
   apply_bgcorrect_bgsub <- function(x) {
-    xsub <- stats::quantile(x[bg], bg.quant)
-    y <- pmax(1, x - xsub)
+    xsub <- ceiling(stats::quantile(x[bg], bg.quant))
+    y <- pmax(0, x - xsub)
     return(y)
   }
   apply_bgcorrect_qq <- function(x) {
-    y <- bgcorrect_qq(x, bg, bw.adjust=bw.adjust, bg.quant=bg.quant)$y
-    return(y)
+    res <- bgcorrect_qq(x, bg, bw.adjust=bw.adjust, bg.quant=bg.quant)
+    return(res$y)
   }
 
   f <- switch(method,
@@ -104,7 +103,8 @@ bgcorrect <- function(ds, method=c("qq", "bgsub", "none"),
               bgsub = apply_bgcorrect_bgsub,
               none = function(x) return(x))
   x <- apply(x, MARGIN=2, FUN=f)
-  return(x)
+  ds$x <- x
+  return(ds)
 }
 
 
