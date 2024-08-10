@@ -29,7 +29,7 @@ geomean <- function(x) {
 #' @param x vector of numeric values
 #' @param bg vector of TRUE/FALSE corresponding to x
 #' @param bw.adjust bandwidth adjustment multiplier for 'density' function
-#' @return vector of quantiles corresponding to array 'x'
+#' @returns vector of quantiles corresponding to array 'x'
 compute_quantiles_kde <- function(x, bg, bw.adjust=2) {
   # setup
   n <- 2^13
@@ -185,6 +185,14 @@ calc_snauc <- function(meta, counts) {
 #' @param bg_lod_quantile number (0.0-1.0)
 #' @returns dataset
 #' @export
+#'
+#' @examples
+#' data(example_ds, package= "stgeomx")
+#' preprocess(example_ds)
+#'
+#' data(example_ds, package= "stgeomx")
+#' preprocess(example_ds, 0.8)
+#'
 preprocess <- function(ds, bg_lod_quantile=0.9) {
   # first remove empty/control AOIs
   ds <- remove_empty_aois(ds)
@@ -254,6 +262,12 @@ preprocess <- function(ds, bg_lod_quantile=0.9) {
 #' @param ds list produced by st_geomx_process
 #' @returns list
 #' @export
+#'
+#' @examples
+#' data(example_ds, package= "stgeomx")
+#' example_ds <- preprocess(example_ds)
+#' merge_probes(example_ds)
+#'
 merge_probes <- function(ds) {
   # convenience function for geomean
   geomean_fast <- function(x) {
@@ -323,6 +337,12 @@ merge_probes <- function(ds) {
 #' @param gene_min_frac_expr number minimum frac of samples expressing gene
 #' @returns list dataset
 #' @export
+#'
+#' @examples
+#' data(example_ds, package= "stgeomx")
+#' example_ds <- preprocess(example_ds)
+#' set_thresholds(example_ds, 50000, 0.6, 0.2, 0.15)
+#'
 set_thresholds <- function(ds,
                            min_counts = 0,
                            min_auc = 0.5,
@@ -355,6 +375,13 @@ set_thresholds <- function(ds,
 #' @param ds list dataset produced by set_thresholds
 #' @returns list dataset
 #' @export
+#'
+#' @examples
+#' data(example_ds, package= "stgeomx")
+#' example_ds <- preprocess(example_ds)
+#' example_ds <- set_thresholds(example_ds)
+#' apply_filters(example_ds)
+#'
 apply_filters <- function(ds) {
   keep_genes <- ds$meta$keep & (!ds$meta$bg)
   fds <- stgeomx::init(
@@ -364,5 +391,46 @@ apply_filters <- function(ds) {
     x = ds$x[keep_genes, ds$samples$keep]
   )
   return(fds)
+}
+
+#'
+#' Merge two datasets
+#'
+#' This function should only be used to merge datasets that are generated from the same probe kit.
+#'
+#' This function can join datasets with two options: union and intersect. Intersect will keep columns that are common to both datasets, whereas union will keep all columns.
+#'
+#' @param a dataset produced by st_geomx_read
+#' @param b dataset produced by st_geomx_read
+#' @returns dataset
+#' @export
+#'
+#' @examples
+#' # example code
+#' data(example_ds, package= "stgeomx")
+#' merge_ds(example_ds, example_ds)
+#'
+merge_ds <- function(a, b) {
+  # merge sample tables
+  sample_cols <- intersect(colnames(a$samples), colnames(b$samples))
+  s <- bind_rows(select(a$samples, all_of(sample_cols)),
+                 select(b$samples, all_of(sample_cols)))
+  # merge count data
+  a_counts <- bind_cols(select(a$meta, probe, gene, bg), a$counts)
+  b_counts <- bind_cols(select(b$meta, probe, gene, bg), b$counts)
+  counts <- inner_join(a_counts, b_counts, by=c("probe", "gene", "bg"),
+                       relationship="one-to-one")
+
+  # Madison edit: added suffix to avoid addition of ".y" to the end of column names
+  counts <- inner_join(a_counts, b_counts, by=c("probe", "gene", "bg"), suffix = c("", ""),
+                       relationship="one-to-one")
+
+  # break into metadata and count data
+  meta <- select(counts, -all_of(s$aoi))
+  counts <- select(counts, all_of(s$aoi))
+
+  # make new dataset object
+  ds <- stgeomx::init(samples=s, meta=meta, counts=counts, x=counts)
+  return(ds)
 }
 

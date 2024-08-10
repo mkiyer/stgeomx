@@ -1,0 +1,1450 @@
+---
+title: "soa"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{soa}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Setup
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+library(tidyverse)
+library(readxl)
+library(ggrepel)
+library(pheatmap)
+
+# bioconductor packages
+library(factoextra)
+
+```
+
+## Vignette-specific functions
+
+```{r vignette functions, include=FALSE}
+
+add_study_field <- function(ds, study) {
+  s <- ds$samples
+  s$study <- study
+  s <- s %>% mutate(patient = sprintf("%s_%s", study, patient),
+                    slide = sprintf("%s_%s", study, slide),
+                    roi = sprintf("%s_%s", study, roi),
+                    aoi = sprintf("%s_%s", study, aoi))
+  colnames(ds$counts) <- s$aoi
+  return(list(samples = s, meta = ds$meta, counts = ds$counts))
+}
+
+# merge_ds <- function(a, b) {
+#   # merge sample tables
+#   sample_cols <- intersect(colnames(a$samples), colnames(b$samples))
+#   s <- bind_rows(select(a$samples, all_of(sample_cols)),
+#                  select(b$samples, all_of(sample_cols)))
+#   
+#   # merge count data
+#   a_counts <- bind_cols(select(a$meta, probe, gene, bg), a$counts)
+#   b_counts <- bind_cols(select(b$meta, probe, gene, bg), b$counts)
+#   # Madison edit: added suffix to avoid addition of ".y" to the end of column names
+#   counts <- inner_join(a_counts, b_counts, by=c("probe", "gene", "bg"), suffix = c("", ""),
+#                        relationship="one-to-one")
+# 
+#   # break into metadata and count data
+#   meta <- select(counts, -all_of(s$aoi))
+#   counts <- select(counts, all_of(s$aoi))
+# 
+#   # make new dataset object
+#   ds <- stgeomx::init(samples=s, meta=meta, counts=counts, x=counts)
+#   return(ds)
+# }
+
+save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
+  stopifnot(!missing(x))
+  stopifnot(!missing(filename))
+  pdf(filename, width=width, height=height)
+  grid::grid.newpage()
+  grid::grid.draw(x$gtable)
+  dev.off()
+}
+
+```
+
+## Input files and parameter settings
+
+```{r input files, include=FALSE}
+
+# input directories
+working_dir <- "/Users/madisoncaldwell/Desktop/stgeomx"
+
+# EDITED (Madison)
+data_dir <- "/Users/madisoncaldwell/Desktop/research/data"
+
+# geomx data file location
+geomx_dir <- file.path(working_dir, "geomx")
+
+#
+# spatial organ atlas datasets
+#
+
+soa_panc_geomx_xlsx <- file.path(data_dir, "spatial_organ_atlas_pancreas.xlsx")
+soa_panc_geomx_annot_xlsx <- file.path(data_dir, "pancreas_annot.xlsx")
+soa_kidney_geomx_xlsx <- file.path(data_dir, "spatial_organ_atlas_kidney.xlsx")
+soa_kidney_geomx_annot_xlsx <- file.path(data_dir, "kidney_annot.xlsx")
+soa_brain_geomx_xlsx <- file.path(data_dir, "spatial_organ_atlas_brain.xlsx")
+soa_brain_geomx_annot_xlsx <- file.path(data_dir, "brain_annot.xlsx")
+soa_colon_geomx_xlsx <- file.path(data_dir, "spatial_organ_atlas_colon.xlsx")
+soa_colon_annot_xlsx <- file.path(data_dir, "colon_annot.xlsx")
+soa_ln_geomx_xlsx <- file.path(data_dir, "spatial_organ_atlas_lymph_node.xlsx")
+soa_ln_geomx_annot_xlsx <- file.path(data_dir, "lymph_node_annot.xlsx")
+
+#
+# output directory settings
+#
+results_dir <- file.path(working_dir, "results")
+plot_dir <- file.path(results_dir, "plots")
+# create output directories
+for (d in c(results_dir, plot_dir)) {
+  if (!dir.exists(d)) {
+    dir.create(d)
+  }
+}
+
+#
+# filtering parameter settings
+#
+# gene probes must be greater than the Nth quantile of the noise/background
+# probes to be considered 'detectable'
+geomx_negprobe_lod_quantile = 0.9
+# minimum number of total counts for each area-of-interest (AOI)
+geomx_min_counts = 50000
+# signal-to-noise area under the curve (snAUC) threshold for each AOI
+geomx_min_auc = 0.60
+# AOI must have at least this fraction of all genes detectable
+geomx_aoi_min_frac_expr = 0.2
+# a gene must be 'detectable' in at least this fraction of the AOIs to be kept
+geomx_gene_min_frac_expr = 0.15
+
+#
+# background correction / normalization parameter settings
+#
+# background (noise) correction methods:
+# bgsub: subtract a constant noise value from every gene
+# qq: models and subtracts background noise relative to gene probe count
+# none: no background correction
+bgcorrect_method = "qq"
+# kernel density estimation is used to model a smooth noise distribution
+# from the small set of background noise probes. modifying the bandwidth 
+# parameter will affect how "smooth" the background distribution model is
+bgcorrect_bw_adjust = 2
+# ensure that gene probes below this quantile in the background noise 
+# distribution are zero. A value of 0.5 means that the gene is 
+# indistinguishable from background (50% likelihood of being noise)
+bgcorrect_bg_quant = 0.5
+#
+# normalization method options:
+# qn: quantile normalization (recommended)
+# rle: deseq2 normalization
+# cpm: counts per million
+# q3: upper quartile normalization
+# tmm: edgeR TMM normalization
+# none: no normalization
+norm_method = "q3"
+
+```
+
+
+# stgeomx
+
+## Read, process, and merge SOA geomx data
+
+```{r soa panc geomx data, include=FALSE}
+
+# read data
+ds_panc <- stgeomx::read_xlsx(soa_panc_geomx_xlsx)
+ds_ln <- stgeomx::read_xlsx(soa_ln_geomx_xlsx)
+ds_kidney <- stgeomx::read_xlsx(soa_kidney_geomx_xlsx)
+ds_colon <- stgeomx::read_xlsx(soa_colon_geomx_xlsx)
+ds_brain <- stgeomx::read_xlsx(soa_brain_geomx_xlsx)
+ds <- ds_panc
+
+# read and join sample annotation
+annot_panc <- read_excel(soa_panc_geomx_annot_xlsx)
+annot_ln <- read_excel(soa_ln_geomx_annot_xlsx)
+annot_kidney <- read_excel(soa_kidney_geomx_annot_xlsx)
+annot_colon <- read_excel(soa_colon_annot_xlsx)
+annot_brain <- read_excel(soa_brain_geomx_annot_xlsx)
+annot <- annot_panc
+
+# combine samples and annotations
+ds$samples <- ds$samples %>%
+  inner_join(annot, by="SegmentDisplayName")
+ds_panc$samples <- ds_panc$samples %>%
+  inner_join(annot_panc, by="SegmentDisplayName")
+ds_ln$samples <- ds_ln$samples %>%
+  inner_join(annot_ln, by="SegmentDisplayName")
+ds_kidney$samples <- ds_kidney$samples %>%
+  inner_join(annot_kidney, by="SegmentDisplayName")
+ds_colon$samples <- ds_colon$samples %>%
+  inner_join(annot_colon, by="SegmentDisplayName")
+ds_brain$samples <- ds_brain$samples %>%
+  inner_join(annot_brain, by="SegmentDisplayName")
+
+# add study fields to aoi
+ds <- add_study_field(ds, "pancreas")
+ds_panc <- add_study_field(ds_panc, "pancreas")
+ds_ln <- add_study_field(ds_ln, "ln")
+ds_kidney <- add_study_field(ds_kidney, "kidney")
+ds_colon <- add_study_field(ds_colon, "colon")
+ds_brain <- add_study_field(ds_brain, "brain")
+
+# merge datasets (all annotated data)
+ds <- stgeomx::merge_ds(ds, ds_ln)
+ds <- stgeomx::merge_ds(ds, ds_colon)
+ds <- stgeomx::merge_ds(ds, ds_brain)
+ds <- stgeomx::merge_ds(ds, ds_kidney)
+
+# process dataset
+ds_panc <- stgeomx::preprocess(ds_panc, geomx_negprobe_lod_quantile)
+ds_ln <- stgeomx::preprocess(ds_ln, geomx_negprobe_lod_quantile)
+ds_colon <- stgeomx::preprocess(ds_colon, geomx_negprobe_lod_quantile)
+ds_kidney <- stgeomx::preprocess(ds_kidney, geomx_negprobe_lod_quantile)
+ds_brain <- stgeomx::preprocess(ds_brain, geomx_negprobe_lod_quantile)
+ds <- stgeomx::preprocess(ds, geomx_negprobe_lod_quantile)
+
+# merge probes when there is >1 probe per gene
+ds_panc <- stgeomx::merge_probes(ds_panc)
+ds_ln <- stgeomx::merge_probes(ds_ln)
+ds_colon <- stgeomx::merge_probes(ds_colon)
+ds_kidney <- stgeomx::merge_probes(ds_kidney)
+ds_brain <- stgeomx::merge_probes(ds_brain)
+ds <- stgeomx::merge_probes(ds)
+
+# set filtering thresholds
+ds_panc <- stgeomx::set_thresholds(ds_panc,
+                              min_counts = geomx_min_counts,
+                              min_auc = geomx_min_auc,
+                              aoi_min_frac_expr = geomx_aoi_min_frac_expr,
+                              gene_min_frac_expr = geomx_gene_min_frac_expr)
+ds_ln <- stgeomx::set_thresholds(ds_ln,
+                              min_counts = geomx_min_counts,
+                              min_auc = geomx_min_auc,
+                              aoi_min_frac_expr = geomx_aoi_min_frac_expr,
+                              gene_min_frac_expr = geomx_gene_min_frac_expr)
+ds_colon <- stgeomx::set_thresholds(ds_colon,
+                              min_counts = geomx_min_counts,
+                              min_auc = geomx_min_auc,
+                              aoi_min_frac_expr = geomx_aoi_min_frac_expr,
+                              gene_min_frac_expr = geomx_gene_min_frac_expr)
+ds_kidney <- stgeomx::set_thresholds(ds_kidney,
+                              min_counts = geomx_min_counts,
+                              min_auc = geomx_min_auc,
+                              aoi_min_frac_expr = geomx_aoi_min_frac_expr,
+                              gene_min_frac_expr = geomx_gene_min_frac_expr)
+ds_brain <- stgeomx::set_thresholds(ds_brain,
+                              min_counts = geomx_min_counts,
+                              min_auc = geomx_min_auc,
+                              aoi_min_frac_expr = geomx_aoi_min_frac_expr,
+                              gene_min_frac_expr = geomx_gene_min_frac_expr)
+ds <- stgeomx::set_thresholds(ds,
+                              min_counts = geomx_min_counts,
+                              min_auc = geomx_min_auc,
+                              aoi_min_frac_expr = geomx_aoi_min_frac_expr,
+                              gene_min_frac_expr = geomx_gene_min_frac_expr)
+
+```
+
+## QC Figures: Nucleic count and surface area vs background noise
+```{r nucleic count and surface area v bg}
+bg_correlations_dir <- file.path(plot_dir, "bg_correlations")
+p <- ggplot(ds$samples, aes(x=.data$AOISurfaceArea, y=.data$bg_cpm, color=.data$study)) +
+  geom_point() +
+  geom_smooth(method = "lm", col = "red") +
+  scale_x_log10() +
+  xlab("Area of Sample") +
+  ylab("Background Noise")
+p
+
+w <- 9
+h <- 4
+f <- file.path(bg_correlations_dir, "surface_area_bg")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+p <- ggplot(ds$samples, aes(x=.data$AOINucleiCount, y=.data$bg_cpm, color=.data$study)) +
+  geom_point() +
+  geom_smooth(method = "lm", col = "red") +
+  xlab("Area of Sample") +
+  ylab("Background Noise")
+p
+
+w <- 9
+h <- 4
+f <- file.path(bg_correlations_dir, "nuclei_count_bg")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+```
+
+## QC Figures: AOI filtering, results stratified by different parameters
+```{r qc filter aoi, stratification}
+ds_func <- ds_kidney
+
+width <- 12
+height <- 8
+ 
+# bg_auc
+p <- ggplot(ds_func$samples, aes(x=patient, y=bg_auc, color=subset)) +
+  geom_boxplot(outlier.shape = NA, alpha=0.5) +
+  geom_point(aes(group=path_aoi, fill=path_aoi), pch=21, color="black", size=2, alpha=0.7,
+             position = position_jitterdodge(jitter.width=0.05, dodge.width=0.5)) +
+  geom_hline(yintercept=0.5) +
+  geom_hline(yintercept=geomx_min_auc, linetype="dashed", color="red") +
+  scale_color_manual(values = pals::cols25()) +
+  scale_fill_manual(values = pals::cols25()) +
+  facet_wrap(~study, scales="free_x", nrow=1) +
+  theme_bw() +
+  theme(axis.text.x = element_text(color = "black", angle = 90, vjust = 0.5, hjust=1)) +
+  theme(legend.position = "bottom")
+p
+f <- file.path(plot_dir, "/updated_qc/qc_study_patient_bg_auc")
+ggsave(paste0(f, ".pdf"), plot=p, width=width, height=height)
+ggsave(paste0(f, ".png"), plot=p, width=width, height=height)
+ 
+# num_counts
+p <- ggplot(ds_func$samples, aes(x=patient, y=num_counts+1, color=subset)) +
+  geom_boxplot(outlier.shape = NA, alpha=0.5) +
+  geom_point(aes(group=path_aoi, fill=path_aoi), pch=21, color="black", size=2, alpha=0.7,
+             position = position_jitterdodge(jitter.width=0.05, dodge.width=0.5)) +
+  geom_hline(yintercept=geomx_min_counts, linetype="dashed", color="red") +
+  scale_y_log10() +
+  scale_color_manual(values = pals::cols25()) +
+  scale_fill_manual(values = pals::cols25()) +
+  facet_wrap(~study, scales="free_x", nrow=1) +
+  theme_bw() +
+  theme(axis.text.x = element_text(color = "black", angle = 90, vjust = 0.5, hjust=1)) +
+  theme(legend.position = "bottom")
+p
+f <- file.path(plot_dir, "/updated_qc/qc_study_patient_counts")
+ggsave(paste0(f, ".pdf"), plot=p, width=width, height=height)
+ggsave(paste0(f, ".png"), plot=p, width=width, height=height)
+ 
+# counts across histopathology
+p <- ggplot(ds_func$samples, aes(x=subset, y=num_counts+1, fill=path)) +
+  geom_boxplot(outlier.shape = NA, alpha=0.5) +
+  geom_point(pch=21, color="black", size=2, alpha=0.7,
+             position = position_jitterdodge(jitter.width=0.05, dodge.width=0.5)) +
+  geom_hline(yintercept=geomx_min_counts, linetype="dashed", color="red") +
+  scale_y_log10() +
+  scale_color_manual(values = pals::cols25()) +
+  facet_wrap(~study, scales="free_x", nrow=1) +
+  theme_bw() +
+  theme(axis.text.x = element_text(color = "black", angle = 90, vjust = 0.5, hjust=1)) +
+  theme(legend.position = "none") 
+p
+f <- file.path(plot_dir, "/updated_qc/qc_path_counts")
+ggsave(paste0(f, ".pdf"), plot=p, width=10, height=5)
+ggsave(paste0(f, ".png"), plot=p, width=10, height=5)
+ 
+# bg_auc across histopathology
+p <- ggplot(ds_func$samples, aes(x=subset, y=bg_auc, fill=path)) +
+  geom_boxplot(outlier.shape = NA, alpha=0.5) +
+  geom_point(pch=21, color="black", size=2, alpha=0.7,
+             position = position_jitterdodge(jitter.width=0.05, dodge.width=0.5)) +
+  geom_hline(yintercept=geomx_min_auc, linetype="dashed", color="red") +
+  scale_color_manual(values = pals::cols25()) +
+  facet_wrap(~study, scales="free_x", nrow=1) +
+  theme_bw() +
+  theme(axis.text.x = element_text(color = "black", angle = 90, vjust = 0.5, hjust=1)) +
+  theme(legend.position = "none") 
+p
+f <- file.path(plot_dir, "/updated_qc/qc_path_bg_auc")
+ggsave(paste0(f, ".pdf"), plot=p, width=10, height=5)
+ggsave(paste0(f, ".png"), plot=p, width=10, height=5)
+ 
+# counts vs auc: subset
+p <- ggplot(ds_func$samples, aes(x=num_counts+1, y=bg_auc)) +
+  geom_point(aes(color=subset)) +
+  geom_vline(xintercept=geomx_min_counts, linetype="dashed", color="red") +
+  geom_hline(yintercept=geomx_min_auc, linetype="dashed", color="red") +
+  scale_x_log10() +
+  scale_color_manual(values = pals::cols25()) +
+  theme_bw() +
+  facet_wrap(~study)
+p
+f <- file.path(plot_dir, "/updated_qc/qc_scatter_num_counts_vs_auc_study_subset.pdf")
+ggsave(paste0(f, ".pdf"), plot=p, width=8, height=6)
+ggsave(paste0(f, ".png"), plot=p, width=8, height=6)
+
+# counts vs auc: region
+p <- ggplot(ds_func$samples, aes(x=num_counts+1, y=bg_auc)) +
+  geom_point(aes(color=region)) +
+  geom_vline(xintercept=geomx_min_counts, linetype="dashed", color="red") +
+  geom_hline(yintercept=geomx_min_auc, linetype="dashed", color="red") +
+  scale_x_log10() +
+  scale_color_manual(values = pals::cols25()) +
+  theme_bw() +
+  facet_wrap(~study)
+p
+f <- file.path(plot_dir, "/updated_qc/qc_scatter_num_counts_vs_auc_study_region.pdf")
+ggsave(paste0(f, ".pdf"), plot=p, width=8, height=6)
+ggsave(paste0(f, ".png"), plot=p, width=8, height=6)
+
+# counts vs auc: slide (sample)
+p <- ggplot(ds_func$samples, aes(x=num_counts+1, y=bg_auc)) +
+  geom_point(aes(color=slide)) +
+  geom_vline(xintercept=geomx_min_counts, linetype="dashed", color="red") +
+  geom_hline(yintercept=geomx_min_auc, linetype="dashed", color="red") +
+  scale_x_log10() +
+  scale_color_manual(values = pals::cols25()) +
+  theme_bw() +
+  facet_wrap(~study)
+p
+f <- file.path(plot_dir, "/updated_qc/qc_scatter_num_counts_vs_auc_study_sample.pdf")
+ggsave(paste0(f, ".pdf"), plot=p, width=8, height=6)
+ggsave(paste0(f, ".png"), plot=p, width=8, height=6)
+
+```
+
+
+## QC Figures: AOI filtering plots
+
+```{r qc filter aoi}
+aoi_filtering_dir <- file.path(plot_dir, "aoi_filtering")
+
+p_merged <- stgeomx::plot_aoi_filter(ds, 
+                              min_counts=geomx_min_counts,
+                              min_auc=geomx_min_auc,
+                              min_frac_expr=geomx_aoi_min_frac_expr)
+p_merged
+w <- 9
+h <- 4
+f <- file.path(aoi_filtering_dir, "qc_aoi_filtering_merged")
+ggsave(paste0(f, ".png"), p_merged, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p_merged, width=w, height=h)
+
+p_panc <- stgeomx::plot_aoi_filter(ds_panc, 
+                              min_counts=geomx_min_counts,
+                              min_auc=geomx_min_auc,
+                              min_frac_expr=geomx_aoi_min_frac_expr)
+p_panc
+w <- 9
+h <- 4
+f <- file.path(aoi_filtering_dir, "qc_aoi_filtering_panc")
+ggsave(paste0(f, ".png"), p_panc, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p_panc, width=w, height=h)
+
+p_ln <- stgeomx::plot_aoi_filter(ds_ln, 
+                              min_counts=geomx_min_counts,
+                              min_auc=geomx_min_auc,
+                              min_frac_expr=geomx_aoi_min_frac_expr)
+p_ln
+w <- 9
+h <- 4
+f <- file.path(aoi_filtering_dir, "qc_aoi_filtering_ln")
+ggsave(paste0(f, ".png"), p_ln, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p_ln, width=w, height=h)
+
+p_kidney <- stgeomx::plot_aoi_filter(ds_kidney, 
+                              min_counts=geomx_min_counts,
+                              min_auc=geomx_min_auc,
+                              min_frac_expr=geomx_aoi_min_frac_expr)
+p_kidney
+w <- 9
+h <- 4
+f <- file.path(aoi_filtering_dir, "qc_aoi_filtering_kidney")
+ggsave(paste0(f, ".png"), p_kidney, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p_kidney, width=w, height=h)
+
+p_colon <- stgeomx::plot_aoi_filter(ds_colon, 
+                              min_counts=geomx_min_counts,
+                              min_auc=geomx_min_auc,
+                              min_frac_expr=geomx_aoi_min_frac_expr)
+p_colon
+w <- 9
+h <- 4
+f <- file.path(aoi_filtering_dir, "qc_aoi_filtering_colon")
+ggsave(paste0(f, ".png"), p_colon, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p_colon, width=w, height=h)
+
+p_brain <- stgeomx::plot_aoi_filter(ds_brain, 
+                              min_counts=geomx_min_counts,
+                              min_auc=geomx_min_auc,
+                              min_frac_expr=geomx_aoi_min_frac_expr)
+p_brain
+w <- 9
+h <- 4
+f <- file.path(aoi_filtering_dir, "qc_aoi_filtering_brain")
+ggsave(paste0(f, ".png"), p_brain, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p_brain, width=w, height=h)
+
+```
+
+## QC Figures: Gene Filtering plots
+
+```{r gene filtering}
+gene_filtering_dir <- file.path(plot_dir, "gene_filtering")
+
+p_merged <- stgeomx::plot_gene_filter(ds, geomx_gene_min_frac_expr)
+p_merged
+w <- 7
+h <- 7
+f <- file.path(gene_filtering_dir, "qc_gene_filtering_merged")
+ggsave(paste0(f, ".png"), p_merged, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p_merged, width=w, height=h)
+
+p_panc <- stgeomx::plot_gene_filter(ds_panc, geomx_gene_min_frac_expr)
+p_panc
+w <- 7
+h <- 7
+f <- file.path(gene_filtering_dir, "qc_gene_filtering_panc")
+ggsave(paste0(f, ".png"), p_panc, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p_panc, width=w, height=h)
+
+p_ln <- stgeomx::plot_gene_filter(ds_ln, geomx_gene_min_frac_expr)
+p_ln
+w <- 7
+h <- 7
+f <- file.path(gene_filtering_dir, "qc_gene_filtering_ln")
+ggsave(paste0(f, ".png"), p_ln, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p_ln, width=w, height=h)
+
+p_colon <- stgeomx::plot_gene_filter(ds_colon, geomx_gene_min_frac_expr)
+p_colon
+w <- 7
+h <- 7
+f <- file.path(gene_filtering_dir, "qc_gene_filtering_colon")
+ggsave(paste0(f, ".png"), p_colon, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p_colon, width=w, height=h)
+
+p_brain <- stgeomx::plot_gene_filter(ds_brain, geomx_gene_min_frac_expr)
+p_brain
+w <- 7
+h <- 7
+f <- file.path(gene_filtering_dir, "qc_gene_filtering_brain")
+ggsave(paste0(f, ".png"), p_brain, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p_brain, width=w, height=h)
+
+p_kidney <- stgeomx::plot_gene_filter(ds_kidney, geomx_gene_min_frac_expr)
+p_kidney
+w <- 7
+h <- 7
+f <- file.path(gene_filtering_dir, "qc_gene_filtering_kidney")
+ggsave(paste0(f, ".png"), p_kidney, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p_kidney, width=w, height=h)
+
+```
+
+## Apply filters, then BG correction and normalization
+
+```{r background correction}
+
+correction_normalization_dir <- file.path(plot_dir, "bgcorrection_normalization")
+
+# MERGED
+# background correction must use original unfiltered matrix
+fds <- stgeomx::bgcorrect(ds, method=bgcorrect_method, 
+                          bw.adjust=bgcorrect_bw_adjust, 
+                          bg.quant=bgcorrect_bg_quant)
+# normalize
+fds <- stgeomx::normalize(fds, norm_method)
+
+# plot expression distribution
+p <- stgeomx::plot_expr_dist(fds)
+p
+w <- 8
+h <- 8
+f <- file.path(correction_normalization_dir, "qc_expr_dist_merged")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+# plot background correction (before and after)
+p <- stgeomx::plot_bgcorrect2(fds)
+p
+w <- 8
+h <- 8
+f <- file.path(correction_normalization_dir, "qc_bgcorrect_merged")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+# background correction must use original unfiltered matrix
+fds <- stgeomx::bgcorrect(ds, method=bgcorrect_method,
+                          bw.adjust=bgcorrect_bw_adjust,
+                          bg.quant=bgcorrect_bg_quant)
+# apply filters before normalizing
+fds <- stgeomx::apply_filters(fds)
+# normalize
+fds <- stgeomx::normalize(fds, norm_method)
+
+# filtering stats
+nrow(ds$samples)
+nrow(fds$samples)
+table(ds$meta$keep)
+
+# final normalized gene expression matrix
+log2_norm_cpm_merged <- log2(fds$x + 1)
+
+# PANCREAS
+# background correction must use original unfiltered matrix
+fds_panc <- stgeomx::bgcorrect(ds_panc, method=bgcorrect_method, 
+                          bw.adjust=bgcorrect_bw_adjust, 
+                          bg.quant=bgcorrect_bg_quant)
+# normalize
+fds_panc <- stgeomx::normalize(fds_panc, norm_method)
+
+# plot expression distribution
+p <- stgeomx::plot_expr_dist(fds_panc)
+p
+w <- 8
+h <- 8
+f <- file.path(correction_normalization_dir, "qc_expr_dist_panc")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+# plot background correction (before and after)
+p <- stgeomx::plot_bgcorrect2(fds_panc)
+p
+w <- 8
+h <- 8
+f <- file.path(correction_normalization_dir, "qc_bgcorrect_panc")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+# background correction must use original unfiltered matrix
+fds_panc <- stgeomx::bgcorrect(ds_panc, method=bgcorrect_method,
+                          bw.adjust=bgcorrect_bw_adjust,
+                          bg.quant=bgcorrect_bg_quant)
+# apply filters before normalizing
+fds_panc <- stgeomx::apply_filters(fds_panc)
+# normalize
+fds_panc <- stgeomx::normalize(fds_panc)
+
+# filtering stats
+nrow(ds$samples)
+nrow(fds_panc$samples)
+table(ds$meta$keep)
+
+# final normalized gene expression matrix
+log2_norm_cpm_panc <- log2(fds_panc$x + 1)
+
+# LYMPH NODE
+# background correction must use original unfiltered matrix
+fds_ln <- stgeomx::bgcorrect(ds_ln, method=bgcorrect_method, 
+                          bw.adjust=bgcorrect_bw_adjust, 
+                          bg.quant=bgcorrect_bg_quant)
+# normalize
+fds_ln <- stgeomx::normalize(fds_ln, norm_method)
+
+# plot expression distribution
+p <- stgeomx::plot_expr_dist(fds_ln)
+p
+w <- 8
+h <- 8
+f <- file.path(correction_normalization_dir, "qc_expr_dist_ln")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+# plot background correction (before and after)
+p <- stgeomx::plot_bgcorrect2(fds_ln)
+p
+w <- 8
+h <- 8
+f <- file.path(correction_normalization_dir, "qc_bgcorrect_ln")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+# background correction must use original unfiltered matrix
+fds_ln <- stgeomx::bgcorrect(ds_ln, method=bgcorrect_method,
+                          bw.adjust=bgcorrect_bw_adjust,
+                          bg.quant=bgcorrect_bg_quant)
+# apply filters before normalizing
+fds_ln <- stgeomx::apply_filters(fds_ln)
+# normalize
+fds_ln <- stgeomx::normalize(fds_ln, norm_method)
+
+# filtering stats
+nrow(ds$samples)
+nrow(fds_ln$samples)
+table(ds$meta$keep)
+
+# final normalized gene expression matrix
+log2_norm_cpm_ln <- log2(fds_ln$x + 1)
+
+# KIDNEY
+# background correction must use original unfiltered matrix
+fds_kidney <- stgeomx::bgcorrect(ds_kidney, method=bgcorrect_method, 
+                          bw.adjust=bgcorrect_bw_adjust, 
+                          bg.quant=bgcorrect_bg_quant)
+# normalize
+fds_kidney <- stgeomx::normalize(fds_kidney, norm_method)
+
+# plot expression distribution
+p <- stgeomx::plot_expr_dist(fds_kidney)
+p
+w <- 8
+h <- 8
+f <- file.path(correction_normalization_dir, "qc_expr_dist_kidney")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+# plot background correction (before and after)
+p <- stgeomx::plot_bgcorrect2(fds_kidney)
+p
+w <- 8
+h <- 8
+f <- file.path(correction_normalization_dir, "qc_bgcorrect_kidney")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+# background correction must use original unfiltered matrix
+fds_kidney <- stgeomx::bgcorrect(ds_kidney, method=bgcorrect_method,
+                          bw.adjust=bgcorrect_bw_adjust,
+                          bg.quant=bgcorrect_bg_quant)
+# apply filters before normalizing
+fds_kidney <- stgeomx::apply_filters(fds_kidney)
+# normalize
+fds_kidney <- stgeomx::normalize(fds_kidney, norm_method)
+
+# filtering stats
+nrow(ds$samples)
+nrow(fds_kidney$samples)
+table(ds$meta$keep)
+
+# final normalized gene expression matrix
+log2_norm_cpm_kidney <- log2(fds_kidney$x + 1)
+
+# COLON
+# background correction must use original unfiltered matrix
+fds_colon <- stgeomx::bgcorrect(ds_colon, method=bgcorrect_method, 
+                          bw.adjust=bgcorrect_bw_adjust, 
+                          bg.quant=bgcorrect_bg_quant)
+# normalize
+fds_colon <- stgeomx::normalize(fds_colon, norm_method)
+
+# plot expression distribution
+p <- stgeomx::plot_expr_dist(fds_colon)
+p
+w <- 8
+h <- 8
+f <- file.path(correction_normalization_dir, "qc_expr_dist_colon")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+# plot background correction (before and after)
+p <- stgeomx::plot_bgcorrect2(fds_colon)
+p
+w <- 8
+h <- 8
+f <- file.path(correction_normalization_dir, "qc_bgcorrect_colon")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+# background correction must use original unfiltered matrix
+fds_colon <- stgeomx::bgcorrect(ds_colon, method=bgcorrect_method,
+                          bw.adjust=bgcorrect_bw_adjust,
+                          bg.quant=bgcorrect_bg_quant)
+# apply filters before normalizing
+fds_colon <- stgeomx::apply_filters(fds_colon)
+# normalize
+fds_colon <- stgeomx::normalize(fds_colon, norm_method)
+
+# filtering stats
+nrow(ds$samples)
+nrow(fds_colon$samples)
+table(ds$meta$keep)
+
+# final normalized gene expression matrix
+log2_norm_cpm_colon <- log2(fds_colon$x + 1)
+
+# BRAIN
+# background correction must use original unfiltered matrix
+fds_brain <- stgeomx::bgcorrect(ds_brain, method=bgcorrect_method, 
+                          bw.adjust=bgcorrect_bw_adjust, 
+                          bg.quant=bgcorrect_bg_quant)
+# normalize
+fds_brain <- stgeomx::normalize(fds_brain, norm_method)
+
+# plot expression distribution
+p <- stgeomx::plot_expr_dist(fds_brain)
+p
+w <- 8
+h <- 8
+f <- file.path(correction_normalization_dir, "qc_expr_dist_brain")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+# plot background correction (before and after)
+p <- stgeomx::plot_bgcorrect2(fds_brain)
+p
+w <- 8
+h <- 8
+f <- file.path(correction_normalization_dir, "qc_bgcorrect_brain")
+ggsave(paste0(f, ".png"), p, width=w, height=h)
+ggsave(paste0(f, ".pdf"), p, width=w, height=h)
+
+# background correction must use original unfiltered matrix
+fds_brain <- stgeomx::bgcorrect(ds_brain, method=bgcorrect_method,
+                          bw.adjust=bgcorrect_bw_adjust,
+                          bg.quant=bgcorrect_bg_quant)
+# apply filters before normalizing
+fds_brain <- stgeomx::apply_filters(fds_brain)
+# normalize
+fds_brain <- stgeomx::normalize(fds_brain, norm_method)
+
+# filtering stats
+nrow(ds$samples)
+nrow(fds$samples)
+table(ds$meta$keep)
+
+# final normalized gene expression matrix
+log2_norm_cpm_brain <- log2(fds_brain$x + 1)
+
+```
+# Manuscript figure generation
+
+## Helper function that creates plots for figure 2 and 3
+```{r helper, include=FALSE}
+cpm <- function(x) {
+  sweep(x, 2, colSums(x) / 1e6, FUN="/")
+}
+
+plot_bgcorrect_helper <- function(ds, title, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0.99)) {
+  s <- select(ds$samples, "aoi", "slide", "keep")
+  x <- ds$x
+  bg <- ds$meta$bg
+
+  # compute background level per aoi
+  s$bg_cpm <- 1e6 * colSums(ds$counts[bg,]) / colSums(ds$counts)
+  # labels for plot legend
+  quant_names <- paste0("q", round(100 * quantiles))
+
+  # gene cpm before bgcorrect
+  xgene <- filter(ds$counts, !bg)
+  xgene <- as_tibble(cpm(xgene))
+  qgene <- xgene %>%
+    reframe(across(everything(), ~ stats::quantile(.x, quantiles))) %>%
+    mutate(name="gene", quant=quant_names)
+
+  # cpm after bgcorrect
+  y <- as_tibble(cpm(x[!bg, ]))
+  qy <- y %>%
+    reframe(across(everything(), ~ stats::quantile(.x, quantiles))) %>%
+    mutate(name="y", quant=quant_names)
+
+  # combine bg and gene quantiles
+  q <- bind_rows(qgene, qy) %>%
+    tidyr::pivot_longer(colnames(x), names_to="aoi", values_to="value") %>%
+    tidyr::pivot_wider(names_from="name", values_from="value", names_prefix="") %>%
+    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
+
+  p2 <- ggplot(q, aes(x=.data$bg_cpm, y=.data$y+1, color=.data$quant, shape=.data$keep)) +
+    geom_point(alpha=0.6) +
+    geom_smooth(data=filter(q, .data$keep), linetype='dashed', method = 'lm',
+                formula = y ~ x, se=FALSE, alpha=0.6) +
+    scale_color_viridis_d(option="plasma") +
+    scale_x_log10() +
+    scale_y_log10() +
+    theme_minimal() +
+    labs(
+      x = "Background Level",
+      y = "Normalized Expression Level"
+    )
+  return(p2)
+}
+
+most_var_genes <- function(x, ntop=500, span=0.50) {
+  tbl <- bind_cols(
+    u = rowMeans(x),
+    v = apply(x, 1, function(x) var(x))
+  )
+  lovar <- loess(v ~ u, data=tbl, span=span)
+  tbl$lovar <- predict(lovar)
+  tbl$vadj <- tbl$v - tbl$lovar
+  keep <- order(tbl$vadj, decreasing=TRUE)[seq_len(min(ntop, nrow(tbl)))]
+  return(x[keep,])
+}
+
+pca <- function(s, y) {
+  # plot dimensions
+  width <- 12
+  height <- 10
+  
+  # PCA
+  npcs <- 50
+  pca_res <- prcomp(t(y), center=TRUE, scale.=TRUE, rank.=npcs)
+  pca_res.var <- round(100 * pca_res$sdev^2 / sum( pca_res$sdev^2 ), 2)
+  pca_res.var_txt <- paste(colnames(pca_res$x), " (", paste(as.character(pca_res.var), "%", ")", sep=""), sep="")
+  
+  x <- bind_cols(s, as_tibble(pca_res$x))
+  
+  # creation of individual PCA plots
+  p <- ggplot(x, aes(x=PC1, y=PC2, color=study)) +
+    geom_point(alpha = 0.8, size=3) +
+    theme_bw() +
+    theme(aspect.ratio=1) +
+    theme(legend.text = element_text(size=7)) +
+    labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
+  return(p)
+}
+```
+
+
+## FIGURE 2: effects of bg correction and normalization on merged only
+```{r bg correction and normalization methods plot}
+correction_normalization_dir <- file.path(plot_dir, "bgcorrection_normalization")
+
+# background correction must use original unfiltered matrix
+fds_bgsub <- stgeomx::bgcorrect(ds, method="bgsub",
+                          bw.adjust=bgcorrect_bw_adjust,
+                          bg.quant=bgcorrect_bg_quant)
+fds_none <- stgeomx::bgcorrect(ds, method="none",
+                          bw.adjust=bgcorrect_bw_adjust,
+                          bg.quant=bgcorrect_bg_quant)
+fds_qq <- stgeomx::bgcorrect(ds, method="qq",
+                          bw.adjust=bgcorrect_bw_adjust,
+                          bg.quant=bgcorrect_bg_quant)
+
+# DO I NEED TO FILTER FIRST??
+# fds <- stgeomx::apply_filters(fds)
+
+# normalize
+fds_bgsub_qn <- stgeomx::normalize(fds_bgsub, "qn")
+fds_bgsub_rle <- stgeomx::normalize(fds_bgsub, "rle")
+fds_bgsub_q3 <- stgeomx::normalize(fds_bgsub, "q3")
+fds_bgsub_tmm <- stgeomx::normalize(fds_bgsub, "tmm")
+
+fds_qq_qn <- stgeomx::normalize(fds_qq, "qn")
+fds_qq_rle <- stgeomx::normalize(fds_qq, "rle")
+fds_qq_q3 <- stgeomx::normalize(fds_qq, "q3")
+fds_qq_tmm <- stgeomx::normalize(fds_qq, "tmm")
+
+fds_none_qn <- stgeomx::normalize(fds_none, "qn")
+fds_none_rle <- stgeomx::normalize(fds_none, "rle")
+fds_none_q3 <- stgeomx::normalize(fds_none, "q3")
+fds_none_tmm <- stgeomx::normalize(fds_none, "tmm")
+
+# plot background correction
+plot_bgsub_qn <- plot_bgcorrect_helper(fds_bgsub_qn, "bgsub + qn")
+plot_bgsub_rle <- plot_bgcorrect_helper(fds_bgsub_rle, "bgsub + rle")
+plot_bgsub_q3 <- plot_bgcorrect_helper(fds_bgsub_q3, "bgsub + q3")
+plot_bgsub_tmm <- plot_bgcorrect_helper(fds_bgsub_tmm, "bgsub + tmm")
+
+plot_qq_qn <- plot_bgcorrect_helper(fds_qq_qn, "qq + qn")
+plot_qq_rle <- plot_bgcorrect_helper(fds_qq_rle, "qq + rle")
+plot_qq_q3 <- plot_bgcorrect_helper(fds_qq_q3, "qq + q3")
+plot_qq_tmm <- plot_bgcorrect_helper(fds_qq_tmm, "qq + tmm")
+
+plot_none_qn <- plot_bgcorrect_helper(fds_none_qn, "none + qn")
+plot_none_rle <- plot_bgcorrect_helper(fds_none_rle, "none + rle")
+plot_none_q3 <- plot_bgcorrect_helper(fds_none_q3, "none + q3")
+plot_none_tmm <- plot_bgcorrect_helper(fds_none_tmm, "none + tmm")
+
+# Column and row titles
+col_titles <- list(
+  wrap_elements(grid::textGrob('', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('Q3', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('TMM', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('RLE', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('QN', gp = grid::gpar(fontsize = 18, fontface = "bold")))
+)
+
+row_titles <- list(
+  wrap_elements(grid::textGrob('NONE', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('BGSub', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('QQ', gp = grid::gpar(fontsize = 18, fontface = "bold")))
+)
+
+# Create grid
+p <- wrap_plots(
+  col_titles[[1]], col_titles[[2]], col_titles[[3]], col_titles[[4]], col_titles[[5]],
+  row_titles[[1]], plot_none_q3, plot_none_tmm, plot_none_rle, plot_none_qn,
+  row_titles[[2]], plot_bgsub_q3, plot_bgsub_tmm, plot_bgsub_rle, plot_bgsub_qn,
+  row_titles[[3]], plot_qq_q3, plot_qq_tmm, plot_qq_rle, plot_qq_qn,
+  ncol = 5,
+  heights = c(0.1, 1, 1, 1),
+  widths = c(0.3, 1, 1, 1, 1)
+) +
+plot_layout(
+  guides = 'collect'
+) &
+theme(plot.margin = unit(c(0.5, 1, 1, 1), "cm"))
+
+# Add titles
+p <- p + 
+  plot_annotation(
+    title = "Effect of Background Correction and Normalization Methods on Normalized Expression Levels"
+  ) & 
+  theme(
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5)
+  )
+
+f <- file.path(correction_normalization_dir, "bgcorrect_normalization_grid")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+```
+
+## Setup for downstream analysis
+```{r further processing}
+# background correction must use original unfiltered matrix
+fds_none <- stgeomx::bgcorrect(ds, method="none",
+                          bw.adjust=bgcorrect_bw_adjust,
+                          bg.quant=bgcorrect_bg_quant)
+fds_bgsub <- stgeomx::bgcorrect(ds, method="bgsub",
+                          bw.adjust=bgcorrect_bw_adjust,
+                          bg.quant=bgcorrect_bg_quant)
+fds_qq <- stgeomx::bgcorrect(ds, method="qq",
+                          bw.adjust=bgcorrect_bw_adjust,
+                          bg.quant=bgcorrect_bg_quant)
+
+# apply filters before normalizing
+fds_none <- stgeomx::apply_filters(fds_none)
+fds_bgsub <- stgeomx::apply_filters(fds_bgsub)
+fds_qq <- stgeomx::apply_filters(fds_qq)
+
+# normalize
+fds_none_q3 <- stgeomx::normalize(fds_none, "q3")
+fds_none_tmm <- stgeomx::normalize(fds_none, "tmm")
+fds_none_rle <- stgeomx::normalize(fds_none, "rle")
+fds_none_qn <- stgeomx::normalize(fds_none, "qn")
+
+fds_bgsub_q3 <- stgeomx::normalize(fds_bgsub, "q3")
+fds_bgsub_tmm <- stgeomx::normalize(fds_bgsub, "tmm")
+fds_bgsub_rle <- stgeomx::normalize(fds_bgsub, "rle")
+fds_bgsub_qn <- stgeomx::normalize(fds_bgsub, "qn")
+
+fds_qq_q3 <- stgeomx::normalize(fds_qq, "q3")
+fds_qq_tmm <- stgeomx::normalize(fds_qq, "tmm")
+fds_qq_rle <- stgeomx::normalize(fds_qq, "rle")
+fds_qq_qn <- stgeomx::normalize(fds_qq, "qn")
+
+# final normalized gene expression matrix
+log2_norm_cpm_none_q3 <- log2(fds_none_q3$x + 1)
+log2_norm_cpm_none_tmm <- log2(fds_none_tmm$x + 1)
+log2_norm_cpm_none_rle <- log2(fds_none_rle$x + 1)
+log2_norm_cpm_none_qn <- log2(fds_none_qn$x + 1)
+
+log2_norm_cpm_bgsub_q3 <- log2(fds_bgsub_q3$x + 1)
+log2_norm_cpm_bgsub_tmm <- log2(fds_bgsub_tmm$x + 1)
+log2_norm_cpm_bgsub_rle <- log2(fds_bgsub_rle$x + 1)
+log2_norm_cpm_bgsub_qn <- log2(fds_bgsub_qn$x + 1)
+
+log2_norm_cpm_qq_q3 <- log2(fds_qq_q3$x + 1)
+log2_norm_cpm_qq_tmm <- log2(fds_qq_tmm$x + 1)
+log2_norm_cpm_qq_rle <- log2(fds_qq_rle$x + 1)
+log2_norm_cpm_qq_qn <- log2(fds_qq_qn$x + 1)
+```
+
+## FIGURE 3: PCA grid
+``` {r pca}
+pca_dir <- file.path(plot_dir, "pca")
+
+# subset most variable genes
+ntop <- 250
+myspan <- 0.5
+
+# most var genes
+s_none_q3 <- fds_none_q3$samples
+y_none_q3 <- most_var_genes(log2_norm_cpm_none_q3, ntop=ntop, span=myspan)
+s_none_tmm <- fds_none_tmm$samples
+y_none_tmm <- most_var_genes(log2_norm_cpm_none_tmm, ntop=ntop, span=myspan)
+s_none_rle <- fds_none_rle$samples
+y_none_rle <- most_var_genes(log2_norm_cpm_none_rle, ntop=ntop, span=myspan)
+s_none_qn <- fds_none_qn$samples
+y_none_qn <- most_var_genes(log2_norm_cpm_none_qn, ntop=ntop, span=myspan)
+
+s_bgsub_q3 <- fds_bgsub_q3$samples
+y_bgsub_q3 <- most_var_genes(log2_norm_cpm_bgsub_q3, ntop=ntop, span=myspan)
+s_bgsub_tmm <- fds_bgsub_tmm$samples
+y_bgsub_tmm <- most_var_genes(log2_norm_cpm_bgsub_tmm, ntop=ntop, span=myspan)
+s_bgsub_rle <- fds_bgsub_rle$samples
+y_bgsub_rle <- most_var_genes(log2_norm_cpm_bgsub_rle, ntop=ntop, span=myspan)
+s_bgsub_qn <- fds_bgsub_qn$samples
+y_bgsub_qn <- most_var_genes(log2_norm_cpm_bgsub_qn, ntop=ntop, span=myspan)
+
+s_qq_q3 <- fds_qq_q3$samples
+y_qq_q3 <- most_var_genes(log2_norm_cpm_qq_q3, ntop=ntop, span=myspan)
+s_qq_tmm <- fds_qq_tmm$samples
+y_qq_tmm <- most_var_genes(log2_norm_cpm_qq_tmm, ntop=ntop, span=myspan)
+s_qq_rle <- fds_qq_rle$samples
+y_qq_rle <- most_var_genes(log2_norm_cpm_qq_rle, ntop=ntop, span=myspan)
+s_qq_qn <- fds_qq_qn$samples
+y_qq_qn <- most_var_genes(log2_norm_cpm_qq_qn, ntop=ntop, span=myspan)
+
+# PCA
+pca_none_q3 <- pca(s_none_q3, y_none_q3)
+pca_none_tmm <- pca(s_none_tmm, y_none_tmm)
+pca_none_rle <- pca(s_none_rle, y_none_rle)
+pca_none_qn <- pca(s_none_qn, y_none_qn)
+
+pca_bgsub_q3 <- pca(s_bgsub_q3, y_bgsub_q3)
+pca_bgsub_tmm <- pca(s_bgsub_tmm, y_bgsub_tmm)
+pca_bgsub_rle <- pca(s_bgsub_rle, y_bgsub_rle)
+pca_bgsub_qn <- pca(s_bgsub_qn, y_bgsub_qn)
+
+pca_qq_q3 <- pca(s_qq_q3, y_qq_q3)
+pca_qq_tmm <- pca(s_qq_tmm, y_qq_tmm)
+pca_qq_rle <- pca(s_qq_rle, y_qq_rle)
+pca_qq_qn <- pca(s_qq_qn, y_qq_qn)
+
+# Grid column and row titles
+col_titles <- list(
+  wrap_elements(grid::textGrob('', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('Q3', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('TMM', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('RLE', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('QN', gp = grid::gpar(fontsize = 18, fontface = "bold")))
+)
+
+row_titles <- list(
+  wrap_elements(grid::textGrob('NONE', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('BGSub', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('QQ', gp = grid::gpar(fontsize = 18, fontface = "bold")))
+)
+
+# Create grid
+p <- wrap_plots(
+  col_titles[[1]], col_titles[[2]], col_titles[[3]], col_titles[[4]], col_titles[[5]],
+  row_titles[[1]], pca_none_q3, pca_none_tmm, pca_none_rle, pca_none_qn,
+  row_titles[[2]], pca_bgsub_q3, pca_bgsub_tmm, pca_bgsub_rle, pca_bgsub_qn,
+  row_titles[[3]], pca_qq_q3, pca_qq_tmm, pca_qq_rle, pca_qq_qn,
+  ncol = 5,
+  heights = c(0.1, 1, 1, 1),
+  widths = c(0.3, 1, 1, 1, 1)
+) +
+plot_layout(
+  guides = 'collect'
+) &
+theme(plot.margin = unit(c(0.5, 1, 1, 1), "cm"))
+
+# Add titles
+p <- p + 
+  plot_annotation(
+    title = "Effect of Background Correction and Normalization Methods on PCA"
+  ) & 
+  theme(
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5)
+  )
+
+f <- file.path(pca_dir, "pca_grid")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+
+```
+
+## FIGURE 4: Clustering
+``` {r clustering}
+
+```
+
+## FIGURE 5: DE
+``` {r de}
+
+```
+
+## FIGURE 6: GSEA
+``` {r gsea}
+
+```
+
+
+# Downstream data analysis 
+## Highly variable genes: updated
+```{r updated highly variable genes, include=FALSE}
+most_var_genes <- function(x, ntop=500, span=0.50) {
+  tbl <- bind_cols(
+    u = rowMeans(x),
+    v = apply(x, 1, function(x) var(x))
+  )
+  lovar <- loess(v ~ u, data=tbl, span=span)
+  tbl$lovar <- predict(lovar)
+  tbl$vadj <- tbl$v - tbl$lovar
+  keep <- order(tbl$vadj, decreasing=TRUE)[seq_len(min(ntop, nrow(tbl)))]
+  return(x[keep,])
+}
+
+maplot <- function(y, ntop=1000, nlabel=100, myspan=0.5) {
+  tbl <- bind_cols(
+    g = rownames(y),
+    u = rowMeans(y),
+    v = apply(y, 1, function(x) var(x))
+  )
+  lovar <- loess(v ~ u, data=tbl, span=myspan)
+  tbl$lovar <- predict(lovar)
+  tbl$vadj <- tbl$v - tbl$lovar
+  tbl <- tbl %>% 
+    mutate(rank = min_rank(-vadj)) %>%
+    arrange(rank)
+  label_data <- filter(tbl, rank <= nlabel)
+  top_data <- filter(tbl, rank < ntop)
+  bot_data <- filter(tbl, rank >= ntop)
+  p <- ggplot(tbl) +
+    geom_point(data=bot_data, aes(u, v), alpha=0.5, size=1, color="#aaaaaa") +
+    geom_point(data=top_data, aes(u, v), alpha=0.8, size=2, color="#ffaaaa") +
+    geom_line(aes(u, lovar), color="blue") +
+    geom_text_repel(data=label_data, aes(u, v, label=g), color="black", size=3, max.overlaps=Inf) +
+    theme_minimal()
+  return(p)
+}
+
+heatmap_genes <- function(s, x, filename="heatmap.pdf", width=10, height=10) {
+  s <- s %>% mutate(
+    noise_quantile = ntile(desc(bg_auc), 8)
+  )
+  annot_col <- column_to_rownames(s, "aoi") %>%
+    select(patient, path_specimen, path_aoi, noise_quantile) %>%
+    as.data.frame()
+  p <- pheatmap(x,
+                scale="row",
+                show_rownames=TRUE,
+                show_colnames=FALSE,
+                border_color=NA,
+                clustering_distance_rows = "euclidean",
+                clustering_distance_cols = "euclidean",
+                clustering_method = "ward.D2",
+                # clustering_method = "average",
+                # clustering_distance_rows = "correlation",
+                # clustering_distance_cols = "correlation",
+                breaks = seq(-3, 3, 0.05),
+                color = colorRampPalette(c("purple3", "black", "yellow2"))(120),
+                annotation_col = annot_col,
+                # annotation_colors = color_scales,
+                fontsize=4,
+                filename=filename,
+                width=width,
+                height=height)
+  return(p)
+}
+
+y <- log2_norm_cpm_merged
+ntop <- 1000
+nlabel <- 100
+myspan <- 0.5
+
+# maplot
+p <- maplot(log2_norm_cpm_merged, ntop=ntop, nlabel=nlabel, myspan=myspan)
+f <- file.path(plot_dir, paste0("maplot"))
+ggsave(paste0(f, ".pdf"), plot=p, width=10, height=10)
+ggsave(paste0(f, ".png"), plot=p, width=10, height=10)
+
+# select most variable genes
+ntop <- 500
+myspan <- 0.5
+s <- fds$samples
+y <- most_var_genes(log2_norm_cpm_merged, ntop=ntop, span=myspan)
+
+# heatmap
+f <- file.path(plot_dir, "heatmap_highvar_genes.pdf")
+p <- heatmap_genes(s, y, f)
+```
+
+## PCA: updated
+```{r updated pca}
+# subset most variable genes
+ntop <- 250
+myspan <- 0.5
+s <- fds$samples
+y <- most_var_genes(log2_norm_cpm_merged, ntop=ntop, span=myspan)
+
+# plot dimensions
+width <- 12
+height <- 10
+
+# PCA
+npcs <- 50
+pca_res <- prcomp(t(y), center=TRUE, scale.=TRUE, rank.=npcs)
+pca_res.var <- round(100 * pca_res$sdev^2 / sum( pca_res$sdev^2 ), 2)
+pca_res.var_txt <- paste(colnames(pca_res$x), " (", paste(as.character(pca_res.var), "%", ")", sep=""), sep="")
+
+# fviz plots
+fviz_ntop <- 50
+
+# percent variance of each PC
+p <- fviz_eig(pca_res, col.var="blue", addlabels=TRUE)
+f <- file.path(plot_dir, paste0("pca_fviz_eig.pdf"))
+ggsave(f, p)
+
+# contributions of variables to each PC
+p <- fviz_contrib(pca_res, choice="var", axes=1, top=fviz_ntop) +
+  theme(axis.text.x = element_text(angle=90))
+f <- file.path(plot_dir, paste0("pca_fviz_contrib1.pdf"))
+ggsave(f, p)
+
+p <- fviz_contrib(pca_res, choice="var", axes=2, top=fviz_ntop) +
+  theme(axis.text.x = element_text(angle=90))
+f <- file.path(plot_dir, paste0("pca_fviz_contrib2.pdf"))
+ggsave(f, p)
+
+p <- fviz_contrib(pca_res, choice="var", axes=3, top=fviz_ntop) +
+  theme(axis.text.x = element_text(angle=90))
+f <- file.path(plot_dir, paste0("pca_fviz_contrib3.pdf"))
+ggsave(f, p)
+
+# contribution to first 3 PCs
+p <- fviz_contrib(pca_res, choice="var", axes = 1:3, top=fviz_ntop) +
+  theme(axis.text.x = element_text(angle=90))
+f <- file.path(plot_dir, paste0("pca_fviz_contrib123.pdf"))
+ggsave(f, p)
+
+# graph of variables contributing to PCA
+p <- fviz_pca_var(
+  pca_res,
+  axes = c(1,2),
+  col.var = "contrib", # Color by the quality of representation
+  gradient.cols = c("darkorchid4", "gold", "darkorange"),
+  repel=TRUE,
+  select.var = list(contrib=fviz_ntop)
+)
+f <- file.path(plot_dir, paste0("pca_fviz_pca_var_pc12.pdf"))
+ggsave(f, p, width=7, height=7)
+
+# graph of variables contributing to PCA
+p <- fviz_pca_var(
+  pca_res,
+  axes = c(1,3),
+  col.var = "contrib", # Color by the quality of representation
+  gradient.cols = c("darkorchid4", "gold", "darkorange"),
+  repel=TRUE,
+  select.var = list(contrib=fviz_ntop)
+)
+f <- file.path(plot_dir, paste0("pca_fviz_pca_var_pc13.pdf"))
+ggsave(f, p, width=7, height=7)
+
+# graph of variables contributing to PCA
+p <- fviz_pca_var(
+  pca_res,
+  axes = c(2,3),
+  col.var = "contrib", # Color by the quality of representation
+  gradient.cols = c("darkorchid4", "gold", "darkorange"),
+  repel=TRUE,
+  select.var = list(contrib=fviz_ntop)
+)
+f <- file.path(plot_dir, paste0("pca_fviz_pca_var_pc23.pdf"))
+ggsave(f, p, width=7, height=7)
+
+
+
+#
+# PCA plots
+#
+x <- bind_cols(s, as_tibble(pca_res$x))
+
+# bg_ks_dist
+p <- ggplot(x, aes(x=PC1, y=PC2, color=bg_auc)) +
+  geom_point(alpha = 0.8, size=3) +
+  scale_color_viridis_c() +
+  theme_bw() +
+  theme(aspect.ratio=1) +
+  theme(legend.text = element_text(size=7)) +
+  labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
+f <- file.path(plot_dir, paste0("pca_bg_auc.pdf"))
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# patient
+p <- ggplot(x, aes(x=PC1, y=PC2, color=patient, shape=study)) +
+  geom_point(alpha = 0.8, size=3) +
+  # scale_color_manual(values = color_scales$patient) +
+  theme_bw() +
+  theme(aspect.ratio=1) +
+  theme(legend.text = element_text(size=7)) +
+  labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
+f <- file.path(plot_dir, paste0("pca_patient.pdf"))
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# region
+p <- ggplot(x, aes(x=PC1, y=PC2, color=region, shape=study)) +
+  geom_point(alpha = 0.8, size=3) +
+  # scale_color_manual(values = color_scales$patient) +
+  theme_bw() +
+  theme(aspect.ratio=1) +
+  theme(legend.text = element_text(size=7)) +
+  labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
+f <- file.path(plot_dir, paste0("pca_region.pdf"))
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# subset
+p <- ggplot(x, aes(x=PC1, y=PC2, color=subset, shape=study)) +
+  geom_point(alpha = 0.8, size=3) +
+  # scale_color_manual(values = color_scales$patient) +
+  theme_bw() +
+  theme(aspect.ratio=1) +
+  theme(legend.text = element_text(size=7)) +
+  labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
+f <- file.path(plot_dir, paste0("pca_subset.pdf"))
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+# study
+p <- ggplot(x, aes(x=PC1, y=PC2, color=study)) +
+  geom_point(alpha = 0.8, size=3) +
+  # scale_color_manual(values=color_scales$path) +
+  theme_bw() +
+  theme(aspect.ratio=1) +
+  theme(legend.text = element_text(size=7)) +
+  labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
+f <- file.path(plot_dir, paste0("pca_study.pdf"))
+ggsave(f, plot=p, device="pdf", width=width, height=height)
+
+
+#
+# Plots of PC1, PC2, and PC3
+#
+pca_plot <- function(x, xvar, yvar, color_by, shape_by) {
+  color_by_string <- rlang::as_string(rlang::ensym(color_by))
+  shape_by_string <- rlang::as_string(rlang::ensym(shape_by))
+  
+  # if (is.character(pull(x, {{color_by}}))) {
+  #   scale_color_func <- scale_color_manual(values = color_scales[[color_by_string]])
+  # } else {
+  #   scale_color_func <- scale_color_viridis_c()
+  # }
+
+  p <- ggplot(x, aes(x={{xvar}}, y={{yvar}}, color={{color_by}}, shape={{shape_by}})) +
+    geom_point(alpha = 0.8, size=3) +
+    #scale_color_func +
+    #scale_color_manual(values = color_scales[[color_by_string]]) +
+    #scale_shape_manual(values = shape_scales[[shape_by_string]]) +
+    theme_bw() +
+    theme(aspect.ratio=1,
+          legend.text = element_text(size=7))
+    # coord_fixed() +
+  return(p)
+}
+
+
+# bg_auc
+p12 <- pca_plot(x, PC1, PC2, bg_auc, study)
+p13 <- pca_plot(x, PC1, PC3, bg_auc, study)
+p23 <- pca_plot(x, PC2, PC3, bg_auc, study)
+p <- p12 + p13 + p23 + 
+  plot_layout(guides = "collect")
+f <- file.path(plot_dir, paste0("pca_bg_auc_pc123.pdf"))
+ggsave(f, plot=p, device="pdf", width=12, height=6)
+
+# region
+p12 <- pca_plot(x, PC1, PC2, region, study)
+p13 <- pca_plot(x, PC1, PC3, region, study)
+p23 <- pca_plot(x, PC2, PC3, region, study)
+p <- p12 + p13 + p23 + 
+  plot_layout(guides = "collect")
+f <- file.path(plot_dir, paste0("pca_region_pc123.pdf"))
+ggsave(f, plot=p, device="pdf", width=12, height=6)
+
+# patient
+p12 <- pca_plot(x, PC1, PC2, patient, study)
+p13 <- pca_plot(x, PC1, PC3, patient, study)
+p23 <- pca_plot(x, PC2, PC3, patient, study)
+p <- p12 + p13 + p23 + 
+  plot_layout(guides = "collect")
+f <- file.path(plot_dir, paste0("pca_patient_pc123.pdf"))
+ggsave(f, plot=p, device="pdf", width=12, height=6)
+
+# study
+p12 <- pca_plot(x, PC1, PC2, study)
+p13 <- pca_plot(x, PC1, PC3, study)
+p23 <- pca_plot(x, PC2, PC3, study)
+p <- p12 + p13 + p23 + 
+  plot_layout(guides = "collect")
+f <- file.path(plot_dir, paste0("pca_study_pc123.pdf"))
+ggsave(f, plot=p, device="pdf", width=12, height=6)
+```
