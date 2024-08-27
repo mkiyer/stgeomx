@@ -8,6 +8,7 @@
 #' @param samples tibble with sample information
 #' @param meta tibble with gene metadata
 #' @param counts tibble with gene count data
+#' @param x tibble with normalized gene count data
 #' @returns dataset
 #' @export
 init <- function(samples, meta, counts, x) {
