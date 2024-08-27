@@ -16,6 +16,12 @@
 #' @param bg.lod.quant limit of detection quantile
 #' @returns ggplot object
 #' @export
+#'
+#' @examples
+#' data(example_ds, package = "stgeomx")
+#' example_ds <- preprocess(example_ds)
+#' plot_aoi_qc(example_ds, "s01_r001_fullroi")
+#'
 plot_aoi_qc <- function(ds, aoi,
                         bw.adjust=2,
                         bg.quant=0.5,
@@ -89,6 +95,12 @@ plot_aoi_qc <- function(ds, aoi,
 #' @param min_frac_expr number threshold range (0-1.0)
 #' @returns ggplot object
 #' @export
+#'
+#' @examples
+#' data(example_ds, package = "stgeomx")
+#' example_ds <- preprocess(example_ds)
+#' plot_aoi_filter(example_ds)
+#'
 plot_aoi_filter <- function(ds,
                             min_counts=0,
                             min_auc=0.5,
@@ -148,6 +160,12 @@ plot_aoi_filter <- function(ds,
 #' @param min_frac_expr number threshold range (0-1.0)
 #' @returns ggplot object
 #' @export
+#'
+#' @examples
+#' data(example_ds, package = "stgeomx")
+#' example_ds <- preprocess(example_ds)
+#' plot_gene_filter(example_ds)
+#'
 plot_gene_filter <- function(ds, min_frac_expr=0) {
   # apply cutoffs
   meta <- ds$meta %>% mutate(
@@ -211,6 +229,12 @@ plot_gene_filter <- function(ds, min_frac_expr=0) {
 #' @param quantiles vector of quantiles [0.0-1.0]
 #' @returns ggplot object
 #' @export
+#'
+#' @examples
+#' data(example_ds, package = "stgeomx")
+#' example_ds <- preprocess(example_ds)
+#' plot_bgcorrect1(example_ds)
+#'
 plot_bgcorrect1 <- function(ds, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0.99)) {
   # labels for plot legend
   quant_names <- paste0("q", round(100 * quantiles))
@@ -274,6 +298,12 @@ plot_bgcorrect1 <- function(ds, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0
 #' @param quantiles vector of quantiles [0.0-1.0]
 #' @returns ggplot object
 #' @export
+#'
+#' @examples
+#' data(example_ds, package = "stgeomx")
+#' example_ds <- preprocess(example_ds)
+#' plot_bgcorrect2(example_ds)
+#'
 plot_bgcorrect2 <- function(ds, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0.99)) {
   s <- select(ds$samples, "aoi", "slide", "keep")
   x <- ds$x
@@ -335,6 +365,12 @@ plot_bgcorrect2 <- function(ds, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0
 #' @param quantiles vector of quantiles [0.0-1.0]
 #' @returns ggplot object
 #' @export
+#'
+#' @examples
+#' data(example_ds, package = "stgeomx")
+#' example_ds <- preprocess(example_ds)
+#' plot_bgcorrect3(example_ds)
+#'
 plot_bgcorrect3 <- function(ds, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0.99)) {
   s <- select(ds$samples, "aoi", "keep")
   x <- ds$x
@@ -394,6 +430,12 @@ plot_bgcorrect3 <- function(ds, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0
 #' @param bg.lod.quantile number between 0 and 1
 #' @returns ggplot object
 #' @export
+#'
+#' @examples
+#' data(example_ds, package = "stgeomx")
+#' example_ds <- preprocess(example_ds)
+#' plot_expr_dist(example_ds)
+#'
 plot_expr_dist <- function(ds, bg.lod.quantile=0.9) {
   s <- select(ds$samples, "aoi", "slide", "keep")
   x <- ds$x

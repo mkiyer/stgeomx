@@ -81,6 +81,13 @@ bgcorrect_qq <- function(x, bg, bw.adjust=1, bg.quant=0.5) {
 #' @param bg.quant background subtraction quantile
 #' @returns stgeomx dataset
 #' @export
+#'
+#' @examples
+#' data(example_ds, package= "stgeomx")
+#' bgcorrect(example_ds, "qq")
+#' bgcorrect(example_ds, "bgsub")
+#' bgcorrect(example_ds, "none")
+#'
 bgcorrect <- function(ds, method=c("qq", "bgsub", "none"),
                       bw.adjust=1, bg.quant=0.5) {
   # check method
@@ -105,37 +112,5 @@ bgcorrect <- function(ds, method=c("qq", "bgsub", "none"),
   x <- apply(x, MARGIN=2, FUN=f)
   ds$x <- x
   return(ds)
-}
-
-
-#'
-#' subtract constant background noise from each sample
-#'
-#' @param x count matrix
-#' @param offset vector of bg noise levels per sample
-#' @param min.count minimum count threshold
-#' @returns matrix of background-subtracted counts
-#'
-obsolete_bgsub <- function(x, offset=0, min.count=1) {
-  x <- sweep(x, 2, offset, FUN="-")
-  x <- apply(x, 2, pmax, min.count)
-  x
-}
-
-#'
-#' background correction method assuming normal dist
-#'
-#' assumes normally distributed background (negative probes)
-#' and gene probes
-#'
-#' @param x matrix of counts
-#' @param bg vector of TRUE/FALSE corresponding to rows of x
-#' @returns matrix of background-subtracted counts
-#'
-obsolete_bgcorrect_norm <- function(x, bg) {
-  a <- stats::sd(x[bg])^2 / stats::sd(x[!bg])^2
-  c <- a * mean(x[!bg]) - mean(x[bg])
-  y <- (1-a)*x + c
-  return(y)
 }
 

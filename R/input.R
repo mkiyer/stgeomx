@@ -42,6 +42,11 @@ prepare_input <- function(samples, counts,
   # ensure samples and count tables are aligned
   stopifnot(all(pull(samples, {{ aoi_key_col }}) == colnames(counts)))
 
+  # ensure no duplicate probes
+  if (sum(duplicated(meta$probe)) > 0) {
+    stop("duplicate probe found")
+  }
+
   # create new identifiers for slide, roi, segment, aoi
   slide_keys <- pull(samples, {{ slide_key_col }})
   samples <- samples %>% mutate(
@@ -81,6 +86,12 @@ prepare_input <- function(samples, counts,
 #' @param negprobe_regex regular expression corresponding to negative probes
 #' @returns dataset
 #' @export
+#'
+#' @examples
+#' sample_tsv <- system.file("extdata", "simple_geomx_sample.tsv", package = "stgeomx")
+#' count_tsv <- system.file("extdata", "simple_geomx_count.tsv", package = "stgeomx")
+#' read_tsv(sample_tsv, count_tsv)
+#'
 read_tsv <- function(sample_tsv_file,
                      count_tsv_file,
                      slide_key_col = "ScanLabel",
@@ -100,6 +111,17 @@ read_tsv <- function(sample_tsv_file,
   counts <- readr::read_tsv(count_tsv_file,
                             show_col_types=FALSE,
                             name_repair="minimal")
+
+  # Madison edit: remove columns with blank names
+  col_names <- colnames(counts)
+  valid_cols <- col_names != ""
+  counts <- counts[, valid_cols]
+
+  # Madison edit: if count is blank, set to 0
+  counts <- counts %>%
+    mutate_all(~replace(., is.na(.), 0)) %>%
+    mutate_all(~ifelse(. == "", 0, .))
+
   # prepare dataset
   ds <- prepare_input(samples, counts, slide_key_col, roi_key_col,
                       segment_key_col, aoi_key_col, probe_key_col,
@@ -126,6 +148,11 @@ read_tsv <- function(sample_tsv_file,
 #' @param negprobe_regex regex corresponding to negative probes
 #' @returns list containing samples, metadata, and counts
 #' @export
+#'
+#' @examples
+#' xlsx_file <- system.file("extdata", "simple_geomx.xlsx", package = "stgeomx")
+#' read_xlsx(xlsx_file)
+#'
 read_xlsx <- function(xlsx_file,
                       sample_sheet = "SegmentProperties",
                       count_sheet = "BioProbeCountMatrix",
@@ -144,6 +171,11 @@ read_xlsx <- function(xlsx_file,
   # read counts
   counts <- readxl::read_excel(xlsx_file, sheet=count_sheet,
                                .name_repair = "minimal")
+
+  # Madison edit: if count is blank, set to 0
+  counts <- counts %>%
+    mutate_all(~replace(., is.na(.), 0)) %>%
+    mutate_all(~ifelse(. == "", 0, .))
 
   # prepare dataset
   ds <- prepare_input(samples, counts, slide_key_col, roi_key_col,

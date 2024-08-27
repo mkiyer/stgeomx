@@ -153,6 +153,18 @@ calc_norm_factors_tmm <- function(x, logratioTrim=0.3, sumTrim=0.05, doWeighting
 #' @param method string normalization method
 #' @returns matrix of normalized counts
 #' @export
+#'
+#' @examples
+#' data(example_ds, package = "stgeomx")
+#' example_ds <- preprocess(example_ds)
+#' example_ds <- merge_probes(example_ds)
+#' normalize(example_ds, "qn")
+#' normalize(example_ds, "rle")
+#' normalize(example_ds, "cpm")
+#' normalize(example_ds, "q3")
+#' normalize(example_ds, "tmm")
+#' normalize(example_ds, "none")
+#'
 normalize <- function(ds, method=c("qn", "rle", "cpm", "q3", "tmm", "none")) {
   # check method
   method <- match.arg(method)
