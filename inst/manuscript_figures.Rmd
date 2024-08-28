@@ -1200,7 +1200,7 @@ p <- p +
     plot.title = element_text(size = 22, face = "bold", hjust = 0.5)
   )
 
-f <- file.path(pca_dir, "pca_grid_2000")
+f <- file.path(pca_dir, "pca_grid_500")
 ggsave(paste0(f, ".png"), p, width=20, height=15)
 ggsave(paste0(f, ".pdf"), p, width=20, height=15)
 
@@ -1272,7 +1272,7 @@ ggsave(paste0(f, ".pdf"), p, width=20, height=15)
 
 ### Pearson correlates
 ```{r}
-# Example data (replace with your actual data)
+
 methods <- c("none_q3", "none_tmm", "none_rle", "none_qn", 
              "bgsub_q3", "bgsub_tmm", "bgsub_rle", "bgsub_qn", 
              "qq_q3", "qq_tmm", "qq_rle", "qq_qn")
@@ -1342,7 +1342,7 @@ print(results_df)
 ### PC1, PC2, PC3, PC4, PC5 for qq_qn
 ``` {r pcs}
 s <- fds_qq_qn$samples
-pcs <- c("PC1", "PC2", "PC3", "PC4", "PC5")
+pcs <- c("PC1", "PC2", "PC3", "PC4")
 pca_tbl <- pca_res_qq_qn$x
 tbl <- as_tibble(pca_tbl[,pcs], rownames="aoi")
  
@@ -1364,7 +1364,7 @@ p <- ggplot(filter(tbl, xpc < ypc), aes(x=xvalue, y=yvalue, color=region, shape=
   custom_theme_pca() +
   facet_grid(ypc ~ xpc)
  
-f <- file.path(pca_dir, "pca_12345_grid")
+f <- file.path(pca_dir, "pca_1234_grid")
 ggsave(paste0(f, ".png"), p, width=25, height=20)
 ggsave(paste0(f, ".pdf"), p, width=25, height=20)
 ```
@@ -1763,7 +1763,7 @@ plot_de_volcano <- function(res, nlabel=50) {
                           filter(res, de == "dn") %>% slice_min(log2fc, n=nlabel))
   label_data <- distinct(label_data)
 
-  p <- ggplot(res, aes(x=log2fc, y=-log10(padj), color=de, size=de)) +
+  p <- ggplot(res, aes(x=log2fc, y=-log10(padj + 1e-300), color=de, size=de)) +
     geom_point(alpha=0.7) +
     geom_text_repel(data=label_data, color="black", size=3, aes(label=gene), max.overlaps=Inf) +
     scale_color_manual(values=c("no"="grey", "dn"="blue", "up"="red")) +
@@ -1796,8 +1796,8 @@ for (mycontrast in unique(de$contrast)) {
 
 # heatmap functions
 plot_pheatmap <- function(m, 
-                          annot_col, 
-                          annot_row, 
+                          annot_col,
+                          # annot_row, 
                           annot_colors,
                           filename, width, height,
                           xmin=-6, xmax=6) {
@@ -1806,8 +1806,8 @@ plot_pheatmap <- function(m,
            color = colorRampPalette(c("navy", "white", "firebrick3"))(50),
            breaks = seq(xmin, xmax, length.out=51),
            annotation_col = annot_col,
-           annotation_row = annot_row,
-           annotation_colors = annot_colors,
+           # annotation_row = annot_row,
+           # annotation_colors = annot_colors,
            border_color = NA,
            cluster_rows = TRUE,
            cluster_cols = TRUE,
@@ -1825,18 +1825,20 @@ plot_pheatmap <- function(m,
 }
 
 # setup heatmap annotations
-gene_annot <- fds_qq_qn$meta 
+# column annotations: show clusters, study
+# no row annotations
+gene_annot <- fds_qq_qn$meta
 # %>%
 #   left_join(hpa_pdac, by=c("gene"="gene_symbol")) %>%
 #   left_join(cptac_de_merged, by=c("gene"="gene_symbol")) %>%
 #   mutate(de_cptac_rna = replace_na(de_cptac_rna, "na"),
 #          de_cptac_prot = replace_na(de_cptac_prot, "na"))
-annot_row <- gene_annot %>%
-  select(gene) %>%
-  column_to_rownames("gene") %>%
-  as.data.frame()
+# annot_row <- gene_annot %>%
+#   select(gene) %>%
+#   column_to_rownames("gene") %>%
+#   as.data.frame()
 annot_col <- column_to_rownames(fds_qq_qn$samples, "aoi") %>%
-  select(patient, study, cluster_name) %>%
+  select(study, cluster_name) %>%
   as.data.frame()
 
 #
@@ -2004,7 +2006,78 @@ ggsave(paste0(f, ".png"), plot=p, width=8, height=8)
 
 ## FIGURE 6: GSEA
 ``` {r gsea}
+# read msigdb data
+f <- file.path(data_dir, "msigdb.v2023.2.Hs.json")
+msigdb_gene_sets <- read_msigdb_json_file(f)
+# determine gene universe
+msigdb_genes <- intersect(fds$meta$gene, msigdb_gene_sets$gene_symbol)
+# filter genes not in our dataset
+msigdb_gene_sets <- msigdb_gene_sets %>%
+  dplyr::filter(gene_symbol %in% fds$meta$gene) %>%
+  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
 
+# gene set categories
+gs_hallmark <- dplyr::filter(msigdb_gene_sets, gs_cat == "H")
+gs_hallmark <- split(x = gs_hallmark$gene_symbol, f = gs_hallmark$gs_name)
+
+# pass log fold change into gsea with hallmark gene sets (sending new code)
+
+get_de_ranks <- function(xde, mycontrast) {
+  ranks <- xde %>% 
+    dplyr::filter(contrast == mycontrast) %>%
+    select(gene, log2fc, padj) %>%
+    mutate(rank = log2fc)
+  ranks = sort(setNames(ranks$rank, ranks$gene), decreasing = TRUE)
+  return(ranks)
+}
+
+plot_gsea_enrichment <- function(x, ranks, a, gs) {
+  txt_stat <- paste0("ES=", round(x$ES,2), " NES=", round(x$NES, 2), " padj=", format(x$padj, scientific=TRUE, digits=3))
+  txt_title <- paste0("ranks: ", a, " gs: ", x$pathway)
+  p <- plotEnrichment(gs[[x$pathway]], ranks) +
+    annotate(geom="text", x=150, y=0.1, label=txt_stat, hjust=0) +
+    labs(title = txt_title, 
+         xlab = "Rank",
+         ylab = "Enrichment Score") +
+    theme(plot.title = element_text(size=8))
+  return(p)
+}
+
+# fgsea_run_batch <- function(xde, xgs, 
+#                             fgsea_eps=0,
+#                             fgsea_nperms=10000, 
+#                             fgsea_nproc=0) {
+#   fgsea_scoretypes <- c("pos", "neg")
+#   gsea <- NULL
+#   for (xcontrast in unique(xde$contrast)) {
+#     ranks <- get_de_ranks(xde, xcontrast)
+#     for (fgsea_scoretype in fgsea_scoretypes) {
+      res <- fgsea(pathways=xgs, 
+                   stats=ranks, 
+                   eps=fgsea_eps, 
+                   scoreType = fgsea_scoretype,
+                   nPermSimple=fgsea_nperms, 
+                   nproc=fgsea_nproc)
+      res <- mutate(res, 
+                    contrast = xcontrast, 
+                    dir = fgsea_scoretype)
+      gsea <- bind_rows(gsea, res)      
+#     }
+#   }
+#   return(gsea)
+# }
+
+
+#
+# Run full analysis
+#
+gsea <- NULL
+
+# hallmark
+res <- fgsea_run_batch(de, gs_hallmark, 
+                       fgsea_eps=0, fgsea_nperms=gsea_nperms, fgsea_nproc=10)
+gsea <- bind_rows(gsea, res)
+gsea_all <- gsea
 ```
 
 
