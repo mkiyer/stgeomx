@@ -810,48 +810,47 @@ cpm <- function(x) {
   sweep(x, 2, colSums(x) / 1e6, FUN="/")
 }
 
-plot_bgcorrect_helper <- function(ds, title, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0.99)) {
-  s <- select(ds$samples, "aoi", "slide", "keep")
-  x <- ds$x
+plot_bgcorrect_helper <- function(ds, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0.99)) {
+  # gene metadata
   bg <- ds$meta$bg
-
-  # compute background level per aoi
-  s$bg_cpm <- 1e6 * colSums(ds$counts[bg,]) / colSums(ds$counts)
+  keep <- ds$meta$keep
   # labels for plot legend
   quant_names <- paste0("q", round(100 * quantiles))
-
+  # sample columns used for plot
+  s <- select(ds$samples, "aoi", "slide", "keep")
+  # compute background level per aoi
+  s$bg_cpm <- 1e6 * colSums(ds$counts[bg,]) / colSums(ds$counts)
+ 
+  # filter genes
+  x <- ds$x[(!bg) & keep,]
+  counts <- ds$counts[(!bg) & keep,]
+ 
   # gene cpm before bgcorrect
-  xgene <- filter(ds$counts, !bg)
-  xgene <- as_tibble(cpm(xgene))
+  xgene <- as_tibble(cpm(counts))
   qgene <- xgene %>%
     reframe(across(everything(), ~ stats::quantile(.x, quantiles))) %>%
     mutate(name="gene", quant=quant_names)
-
+ 
   # cpm after bgcorrect
-  y <- as_tibble(cpm(x[!bg, ]))
+  y <- as_tibble(cpm(x))
   qy <- y %>%
     reframe(across(everything(), ~ stats::quantile(.x, quantiles))) %>%
     mutate(name="y", quant=quant_names)
-
+ 
   # combine bg and gene quantiles
   q <- bind_rows(qgene, qy) %>%
     tidyr::pivot_longer(colnames(x), names_to="aoi", values_to="value") %>%
     tidyr::pivot_wider(names_from="name", values_from="value", names_prefix="") %>%
     inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
-
-  p2 <- ggplot(q, aes(x=.data$bg_cpm, y=.data$y+1, color=.data$quant, shape=.data$keep)) +
+ 
+  p <- ggplot(filter(q, .data$keep), aes(x=.data$bg_cpm+1, y=.data$y+1, color=.data$quant)) +
     geom_point(alpha=0.6) +
     geom_smooth(data=filter(q, .data$keep), linetype='dashed', method = 'lm',
                 formula = y ~ x, se=FALSE, alpha=0.6) +
     scale_color_viridis_d(option="plasma") +
-    scale_x_log10() +
-    scale_y_log10() +
     theme_minimal() +
-    labs(
-      x = "Background Level",
-      y = "Normalized Expression Level"
-    )
-  return(p2)
+    labs(x="Noise (CPM)", y="Normalized Counts (CPM)")
+  return(p)
 }
 
 most_var_genes <- function(x, ntop=500, span=0.50) {
@@ -861,31 +860,75 @@ most_var_genes <- function(x, ntop=500, span=0.50) {
   )
   lovar <- loess(v ~ u, data=tbl, span=span)
   tbl$lovar <- predict(lovar)
-  tbl$vadj <- tbl$v - tbl$lovar
+  tbl$vadj <- tbl$v / tbl$lovar
   keep <- order(tbl$vadj, decreasing=TRUE)[seq_len(min(ntop, nrow(tbl)))]
   return(x[keep,])
 }
 
 pca <- function(s, y) {
+  # PCA
+  pca_res <- prcomp(t(y), center=TRUE, scale.=FALSE)
+  pca_res.var <- round(100 * pca_res$sdev^2 / sum( pca_res$sdev^2 ), 2)
+  pca_res$var_txt <- paste(colnames(pca_res$x), " (", paste(as.character(pca_res.var), "%", ")", sep=""), sep="")
+
+  return(pca_res)
+} 
+
+plot_pca <- function(pca_res, x) {
   # plot dimensions
   width <- 12
   height <- 10
   
-  # PCA
-  npcs <- 50
-  pca_res <- prcomp(t(y), center=TRUE, scale.=TRUE, rank.=npcs)
-  pca_res.var <- round(100 * pca_res$sdev^2 / sum( pca_res$sdev^2 ), 2)
-  pca_res.var_txt <- paste(colnames(pca_res$x), " (", paste(as.character(pca_res.var), "%", ")", sep=""), sep="")
-  
-  x <- bind_cols(s, as_tibble(pca_res$x))
-  
   # creation of individual PCA plots
   p <- ggplot(x, aes(x=PC1, y=PC2, color=study)) +
-    geom_point(alpha = 0.8, size=3) +
+    geom_point(alpha = 0.4, size=1) +
     theme_bw() +
     theme(aspect.ratio=1) +
     theme(legend.text = element_text(size=7)) +
-    labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
+    labs(x=pca_res$var_txt[1], y=pca_res$var_txt[2])
+  return(p)
+}
+
+plot_pca_bg <- function(pca_res, x) {
+  # plot dimensions
+  width <- 12
+  height <- 10
+  
+  # creation of individual PCA plots
+  p <- ggplot(x, aes(x=PC1, y=PC2, color=bg_auc)) +
+    geom_point(alpha = 0.4, size=1) +
+    scale_color_viridis_c() +
+    theme_bw() +
+    theme(aspect.ratio=1) +
+    theme(legend.text = element_text(size=7)) +
+    labs(x=pca_res$var_txt[1], y=pca_res$var_txt[2])
+  return(p)
+}
+
+cluster_pca <- function(pca_res) {
+# npcs
+npcs <- 3
+nclusters <- 5
+
+# cluster PCA results
+# pam
+x <- pca_res$x[,1:npcs]
+pamx <- cluster::pam(dist(x), k=nclusters)
+memb <- paste0("c", pamx$clustering)
+
+return(memb)
+}
+
+pca_plot_ipmn <- function(fds, pca_res, xvar, yvar, color_by, shape_by) {
+  x <- bind_cols(fds$samples, as_tibble(pca_res$x))
+  color_by_string <- rlang::as_string(rlang::ensym(color_by))
+  shape_by_string <- rlang::as_string(rlang::ensym(shape_by))
+  p <- ggplot(x, aes(x={{xvar}}, y={{yvar}}, color={{color_by}}, shape={{shape_by}})) +
+    geom_point(alpha = 0.6, size=1) +
+    # scale_color_manual(values = color_scales[[color_by_string]]) +
+    # scale_shape_manual(values = shape_scales[[shape_by_string]]) +
+    coord_fixed() +
+    theme_bw()
   return(p)
 }
 ```
@@ -906,9 +949,6 @@ fds_qq <- stgeomx::bgcorrect(ds, method="qq",
                           bw.adjust=bgcorrect_bw_adjust,
                           bg.quant=bgcorrect_bg_quant)
 
-# DO I NEED TO FILTER FIRST??
-# fds <- stgeomx::apply_filters(fds)
-
 # normalize
 fds_bgsub_qn <- stgeomx::normalize(fds_bgsub, "qn")
 fds_bgsub_rle <- stgeomx::normalize(fds_bgsub, "rle")
@@ -926,20 +966,20 @@ fds_none_q3 <- stgeomx::normalize(fds_none, "q3")
 fds_none_tmm <- stgeomx::normalize(fds_none, "tmm")
 
 # plot background correction
-plot_bgsub_qn <- plot_bgcorrect_helper(fds_bgsub_qn, "bgsub + qn")
-plot_bgsub_rle <- plot_bgcorrect_helper(fds_bgsub_rle, "bgsub + rle")
-plot_bgsub_q3 <- plot_bgcorrect_helper(fds_bgsub_q3, "bgsub + q3")
-plot_bgsub_tmm <- plot_bgcorrect_helper(fds_bgsub_tmm, "bgsub + tmm")
+plot_bgsub_qn <- plot_bgcorrect_helper(fds_bgsub_qn)
+plot_bgsub_rle <- plot_bgcorrect_helper(fds_bgsub_rle)
+plot_bgsub_q3 <- plot_bgcorrect_helper(fds_bgsub_q3)
+plot_bgsub_tmm <- plot_bgcorrect_helper(fds_bgsub_tmm)
 
-plot_qq_qn <- plot_bgcorrect_helper(fds_qq_qn, "qq + qn")
-plot_qq_rle <- plot_bgcorrect_helper(fds_qq_rle, "qq + rle")
-plot_qq_q3 <- plot_bgcorrect_helper(fds_qq_q3, "qq + q3")
-plot_qq_tmm <- plot_bgcorrect_helper(fds_qq_tmm, "qq + tmm")
+plot_qq_qn <- plot_bgcorrect_helper(fds_qq_qn)
+plot_qq_rle <- plot_bgcorrect_helper(fds_qq_rle)
+plot_qq_q3 <- plot_bgcorrect_helper(fds_qq_q3)
+plot_qq_tmm <- plot_bgcorrect_helper(fds_qq_tmm)
 
-plot_none_qn <- plot_bgcorrect_helper(fds_none_qn, "none + qn")
-plot_none_rle <- plot_bgcorrect_helper(fds_none_rle, "none + rle")
-plot_none_q3 <- plot_bgcorrect_helper(fds_none_q3, "none + q3")
-plot_none_tmm <- plot_bgcorrect_helper(fds_none_tmm, "none + tmm")
+plot_none_qn <- plot_bgcorrect_helper(fds_none_qn)
+plot_none_rle <- plot_bgcorrect_helper(fds_none_rle)
+plot_none_q3 <- plot_bgcorrect_helper(fds_none_q3)
+plot_none_tmm <- plot_bgcorrect_helper(fds_none_tmm)
 
 # Column and row titles
 col_titles <- list(
@@ -972,10 +1012,10 @@ plot_layout(
 theme(plot.margin = unit(c(0.5, 1, 1, 1), "cm"))
 
 # Add titles
-p <- p + 
+p <- p +
   plot_annotation(
     title = "Effect of Background Correction and Normalization Methods on Normalized Expression Levels"
-  ) & 
+  ) &
   theme(
     plot.title = element_text(size = 22, face = "bold", hjust = 0.5)
   )
@@ -1041,7 +1081,7 @@ log2_norm_cpm_qq_qn <- log2(fds_qq_qn$x + 1)
 pca_dir <- file.path(plot_dir, "pca")
 
 # subset most variable genes
-ntop <- 250
+ntop <- 500
 myspan <- 0.5
 
 # most var genes
@@ -1072,21 +1112,54 @@ y_qq_rle <- most_var_genes(log2_norm_cpm_qq_rle, ntop=ntop, span=myspan)
 s_qq_qn <- fds_qq_qn$samples
 y_qq_qn <- most_var_genes(log2_norm_cpm_qq_qn, ntop=ntop, span=myspan)
 
-# PCA
-pca_none_q3 <- pca(s_none_q3, y_none_q3)
-pca_none_tmm <- pca(s_none_tmm, y_none_tmm)
-pca_none_rle <- pca(s_none_rle, y_none_rle)
-pca_none_qn <- pca(s_none_qn, y_none_qn)
+# PCA_res
+pca_res_none_q3 <- pca(s_none_q3, y_none_q3)
+pca_res_none_tmm <- pca(s_none_tmm, y_none_tmm)
+pca_res_none_rle <- pca(s_none_rle, y_none_rle)
+pca_res_none_qn <- pca(s_none_qn, y_none_qn)
 
-pca_bgsub_q3 <- pca(s_bgsub_q3, y_bgsub_q3)
-pca_bgsub_tmm <- pca(s_bgsub_tmm, y_bgsub_tmm)
-pca_bgsub_rle <- pca(s_bgsub_rle, y_bgsub_rle)
-pca_bgsub_qn <- pca(s_bgsub_qn, y_bgsub_qn)
+pca_res_bgsub_q3 <- pca(s_bgsub_q3, y_bgsub_q3)
+pca_res_bgsub_tmm <- pca(s_bgsub_tmm, y_bgsub_tmm)
+pca_res_bgsub_rle <- pca(s_bgsub_rle, y_bgsub_rle)
+pca_res_bgsub_qn <- pca(s_bgsub_qn, y_bgsub_qn)
 
-pca_qq_q3 <- pca(s_qq_q3, y_qq_q3)
-pca_qq_tmm <- pca(s_qq_tmm, y_qq_tmm)
-pca_qq_rle <- pca(s_qq_rle, y_qq_rle)
-pca_qq_qn <- pca(s_qq_qn, y_qq_qn)
+pca_res_qq_q3 <- pca(s_qq_q3, y_qq_q3)
+pca_res_qq_tmm <- pca(s_qq_tmm, y_qq_tmm)
+pca_res_qq_rle <- pca(s_qq_rle, y_qq_rle)
+pca_res_qq_qn <- pca(s_qq_qn, y_qq_qn)
+
+# x
+x_none_q3 <- bind_cols(s_none_q3, as_tibble(pca_res_none_q3$x))
+x_none_tmm <- bind_cols(s_none_tmm, as_tibble(pca_res_none_tmm$x))
+x_none_rle <- bind_cols(s_none_rle, as_tibble(pca_res_none_rle$x))
+x_none_qn <- bind_cols(s_none_qn, as_tibble(pca_res_none_qn$x))
+
+x_bgsub_q3 <- bind_cols(s_bgsub_q3, as_tibble(pca_res_bgsub_q3$x))
+x_bgsub_tmm <- bind_cols(s_bgsub_tmm, as_tibble(pca_res_bgsub_tmm$x))
+x_bgsub_rle <- bind_cols(s_bgsub_rle, as_tibble(pca_res_bgsub_rle$x))
+x_bgsub_qn <- bind_cols(s_bgsub_qn, as_tibble(pca_res_bgsub_qn$x))
+
+x_qq_q3 <- bind_cols(s_qq_q3, as_tibble(pca_res_qq_q3$x))
+x_qq_tmm <- bind_cols(s_qq_tmm, as_tibble(pca_res_qq_tmm$x))
+x_qq_rle <- bind_cols(s_qq_rle, as_tibble(pca_res_qq_rle$x))
+x_qq_qn <- bind_cols(s_qq_qn, as_tibble(pca_res_qq_qn$x))
+
+# individual pca plots
+pca_none_q3 <- plot_pca(pca_res_none_q3, x_none_q3)
+pca_none_tmm <- plot_pca(pca_res_none_tmm, x_none_tmm)
+pca_none_rle <- plot_pca(pca_res_none_q3, x_none_rle)
+pca_none_qn <- plot_pca(pca_res_none_q3, x_none_qn)
+
+pca_bgsub_q3 <- plot_pca(pca_res_bgsub_q3, x_bgsub_q3)
+pca_bgsub_tmm <- plot_pca(pca_res_bgsub_tmm, x_bgsub_tmm)
+pca_bgsub_rle <- plot_pca(pca_res_bgsub_q3, x_bgsub_rle)
+pca_bgsub_qn <- plot_pca(pca_res_bgsub_q3, x_bgsub_qn)
+
+pca_qq_q3 <- plot_pca(pca_res_qq_q3, x_qq_q3)
+pca_qq_tmm <- plot_pca(pca_res_qq_tmm, x_qq_tmm)
+pca_qq_rle <- plot_pca(pca_res_qq_q3, x_qq_rle)
+pca_qq_qn <- plot_pca(pca_res_qq_q3, x_qq_qn)
+
 
 # Grid column and row titles
 col_titles <- list(
@@ -1127,19 +1200,805 @@ p <- p +
     plot.title = element_text(size = 22, face = "bold", hjust = 0.5)
   )
 
-f <- file.path(pca_dir, "pca_grid")
+f <- file.path(pca_dir, "pca_grid_2000")
 ggsave(paste0(f, ".png"), p, width=20, height=15)
 ggsave(paste0(f, ".pdf"), p, width=20, height=15)
 
 ```
 
+### FIGURE 3B: Background Noise
+``` {r}
+# individual pca background plots
+pca_none_q3 <- plot_pca_bg(pca_res_none_q3, x_none_q3)
+pca_none_tmm <- plot_pca_bg(pca_res_none_tmm, x_none_tmm)
+pca_none_rle <- plot_pca_bg(pca_res_none_q3, x_none_rle)
+pca_none_qn <- plot_pca_bg(pca_res_none_q3, x_none_qn)
+
+pca_bgsub_q3 <- plot_pca_bg(pca_res_bgsub_q3, x_bgsub_q3)
+pca_bgsub_tmm <- plot_pca_bg(pca_res_bgsub_tmm, x_bgsub_tmm)
+pca_bgsub_rle <- plot_pca_bg(pca_res_bgsub_q3, x_bgsub_rle)
+pca_bgsub_qn <- plot_pca_bg(pca_res_bgsub_q3, x_bgsub_qn)
+
+pca_qq_q3 <- plot_pca_bg(pca_res_qq_q3, x_qq_q3)
+pca_qq_tmm <- plot_pca_bg(pca_res_qq_tmm, x_qq_tmm)
+pca_qq_rle <- plot_pca_bg(pca_res_qq_q3, x_qq_rle)
+pca_qq_qn <- plot_pca_bg(pca_res_qq_q3, x_qq_qn)
+
+
+# Grid column and row titles
+col_titles <- list(
+  wrap_elements(grid::textGrob('', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('Q3', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('TMM', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('RLE', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('QN', gp = grid::gpar(fontsize = 18, fontface = "bold")))
+)
+
+row_titles <- list(
+  wrap_elements(grid::textGrob('NONE', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('BGSub', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('QQ', gp = grid::gpar(fontsize = 18, fontface = "bold")))
+)
+
+# Create grid
+p <- wrap_plots(
+  col_titles[[1]], col_titles[[2]], col_titles[[3]], col_titles[[4]], col_titles[[5]],
+  row_titles[[1]], pca_none_q3, pca_none_tmm, pca_none_rle, pca_none_qn,
+  row_titles[[2]], pca_bgsub_q3, pca_bgsub_tmm, pca_bgsub_rle, pca_bgsub_qn,
+  row_titles[[3]], pca_qq_q3, pca_qq_tmm, pca_qq_rle, pca_qq_qn,
+  ncol = 5,
+  heights = c(0.1, 1, 1, 1),
+  widths = c(0.3, 1, 1, 1, 1)
+) +
+plot_layout(
+  guides = 'collect'
+) &
+theme(plot.margin = unit(c(0.5, 1, 1, 1), "cm"))
+
+# Add titles
+p <- p + 
+  plot_annotation(
+    title = "Effect of Background Correction and Normalization Methods on PCA"
+  ) & 
+  theme(
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5)
+  )
+
+# Save graph
+f <- file.path(pca_dir, "pca_grid_bg")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+```
+
+### Pearson correlates
+```{r}
+# Example data (replace with your actual data)
+methods <- c("none_q3", "none_tmm", "none_rle", "none_qn", 
+             "bgsub_q3", "bgsub_tmm", "bgsub_rle", "bgsub_qn", 
+             "qq_q3", "qq_tmm", "qq_rle", "qq_qn")
+
+# Performing cor.test and storing the result in lists
+pc1_data <- list(cor.test(x_none_q3$PC1, x_none_q3$bg_auc),
+                 cor.test(x_none_tmm$PC1, x_none_tmm$bg_auc),
+                 cor.test(x_none_rle$PC1, x_none_rle$bg_auc),
+                 cor.test(x_none_qn$PC1, x_none_qn$bg_auc),
+                 cor.test(x_bgsub_q3$PC1, x_bgsub_q3$bg_auc),
+                 cor.test(x_bgsub_tmm$PC1, x_bgsub_tmm$bg_auc),
+                 cor.test(x_bgsub_rle$PC1, x_bgsub_rle$bg_auc),
+                 cor.test(x_bgsub_qn$PC1, x_bgsub_qn$bg_auc),
+                 cor.test(x_qq_q3$PC1, x_qq_q3$bg_auc),
+                 cor.test(x_qq_tmm$PC1, x_qq_tmm$bg_auc),
+                 cor.test(x_qq_rle$PC1, x_qq_rle$bg_auc),
+                 cor.test(x_qq_qn$PC1, x_qq_qn$bg_auc))
+
+pc2_data <- list(cor.test(x_none_q3$PC2, x_none_q3$bg_auc),
+                 cor.test(x_none_tmm$PC2, x_none_tmm$bg_auc),
+                 cor.test(x_none_rle$PC2, x_none_rle$bg_auc),
+                 cor.test(x_none_qn$PC2, x_none_qn$bg_auc),
+                 cor.test(x_bgsub_q3$PC2, x_bgsub_q3$bg_auc),
+                 cor.test(x_bgsub_tmm$PC2, x_bgsub_tmm$bg_auc),
+                 cor.test(x_bgsub_rle$PC2, x_bgsub_rle$bg_auc),
+                 cor.test(x_bgsub_qn$PC2, x_bgsub_qn$bg_auc),
+                 cor.test(x_qq_q3$PC2, x_qq_q3$bg_auc),
+                 cor.test(x_qq_tmm$PC2, x_qq_tmm$bg_auc),
+                 cor.test(x_qq_rle$PC2, x_qq_rle$bg_auc),
+                 cor.test(x_qq_qn$PC2, x_qq_qn$bg_auc))
+
+pc3_data <- list(cor.test(x_none_q3$PC3, x_none_q3$bg_auc),
+                 cor.test(x_none_tmm$PC3, x_none_tmm$bg_auc),
+                 cor.test(x_none_rle$PC3, x_none_rle$bg_auc),
+                 cor.test(x_none_qn$PC3, x_none_qn$bg_auc),
+                 cor.test(x_bgsub_q3$PC3, x_bgsub_q3$bg_auc),
+                 cor.test(x_bgsub_tmm$PC3, x_bgsub_tmm$bg_auc),
+                 cor.test(x_bgsub_rle$PC3, x_bgsub_rle$bg_auc),
+                 cor.test(x_bgsub_qn$PC3, x_bgsub_qn$bg_auc),
+                 cor.test(x_qq_q3$PC3, x_qq_q3$bg_auc),
+                 cor.test(x_qq_tmm$PC3, x_qq_tmm$bg_auc),
+                 cor.test(x_qq_rle$PC3, x_qq_rle$bg_auc),
+                 cor.test(x_qq_qn$PC3, x_qq_qn$bg_auc))
+
+# Extract the correlation estimates from cor.test results
+pc1_estimates <- sapply(pc1_data, function(test) test$estimate)
+pc2_estimates <- sapply(pc2_data, function(test) test$estimate)
+pc3_estimates <- sapply(pc3_data, function(test) test$estimate)
+
+# Initialize an empty matrix to store the results
+results <- matrix(NA, nrow = length(methods), ncol = 3)
+rownames(results) <- methods
+colnames(results) <- c("PC1", "PC2", "PC3")
+
+# Populate the results matrix
+results[, "PC1"] <- pc1_estimates
+results[, "PC2"] <- pc2_estimates
+results[, "PC3"] <- pc3_estimates
+
+# Convert to a data frame for better readability
+results_df <- as.data.frame(results)
+
+# Print the results
+print(results_df)
+```
+
+### PC1, PC2, PC3, PC4, PC5 for qq_qn
+``` {r pcs}
+s <- fds_qq_qn$samples
+pcs <- c("PC1", "PC2", "PC3", "PC4", "PC5")
+pca_tbl <- pca_res_qq_qn$x
+tbl <- as_tibble(pca_tbl[,pcs], rownames="aoi")
+ 
+x <- tbl %>% pivot_longer(cols=all_of(pcs), names_to="xpc", values_to="xvalue")
+y <- tbl %>% pivot_longer(cols=all_of(pcs), names_to="ypc", values_to="yvalue")
+tbl <- full_join(x, y, by=join_by(aoi), relationship="many-to-many")
+tbl <- left_join(tbl, s, by=join_by(aoi))
+ 
+custom_theme_pca <- function() {
+  theme_minimal() +
+  theme(aspect.ratio=1) +
+    theme(legend.title = element_text(size=8),
+          legend.text = element_text(size=7),
+          legend.position = "bottom")
+}
+ 
+p <- ggplot(filter(tbl, xpc < ypc), aes(x=xvalue, y=yvalue, color=region, shape=study)) +
+  geom_point(alpha=0.7) +
+  custom_theme_pca() +
+  facet_grid(ypc ~ xpc)
+ 
+f <- file.path(pca_dir, "pca_12345_grid")
+ggsave(paste0(f, ".png"), p, width=25, height=20)
+ggsave(paste0(f, ".pdf"), p, width=25, height=20)
+```
+
+### SUPPLEMENTAL: regions on PCA
+``` {r PCA regions}
+# pancreas region
+p <- ggplot(x_qq_qn %>% arrange(study), aes(x=PC1, y=PC2, color = ifelse(study == "pancreas", region, "other"), shape=study)) +
+  geom_point(alpha = 0.8, size=3) +
+  scale_color_manual(values = c("other" = "grey",
+                                "acini" = "red",
+                                "acini_and_duct" = "orange",
+                                "alpha_cell_enriched_islet" = "green",
+                                "beta_cell_enriched_islet" = "blue",
+                                "duct" = "yellow",
+                                "islet" = "pink")) +
+  theme_bw() +
+  theme(aspect.ratio=1) +
+  theme(legend.text = element_text(size=7)) +
+  labs(x=pca_res_qq_qn$var_txt[1], y=pca_res_qq_qn$var_txt[2])
+f <- file.path(plot_dir, paste0("pca_region_pancreas.pdf"))
+ggsave(f, plot=p, device="pdf", width=10, height=10)
+
+# lymph node and colon regions
+p <- ggplot(x_qq_qn, aes(x = PC1, y = PC2, color = ifelse(study %in% c("colon", "ln"), region, "other"), shape = study)) +
+  geom_point(alpha = 0.8, size=3) +
+  scale_color_manual(values = c("other" = "grey",
+                                "b_cell_zone" = "red",
+                                "circular_muscle_layer" = "salmon",
+                                "connective_tissues" = "orange",
+                                "enteroendocrine_cells" = "yellow",
+                                "epithelium" = "green",
+                                "germinal_center" = "palegreen3",
+                                "lamina_propria" = "cyan4",
+                                "longitudinal_muscle_layer" = "turquoise1",
+                                "lymphoid_structure" = "steelblue",
+                                "medulla" = "blue",
+                                "muscularis_mucosae" = "darkmagenta",
+                                "paneth_cells" = "purple",
+                                "t_cell_zone" = "pink",
+                                "trabecula" = "deeppink",
+                                "vessels" = "tan3")) +
+  theme_bw() +
+  theme(aspect.ratio=1) +
+  theme(legend.text = element_text(size=7)) +
+  labs(x=pca_res_qq_qn$var_txt[1], y=pca_res_qq_qn$var_txt[2])
+p
+f <- file.path(plot_dir, paste0("pca_region_ln_colon.pdf"))
+ggsave(f, plot=p, device="pdf", width=20, height=15)
+```
+
 ## FIGURE 4: Clustering
 ``` {r clustering}
+# the following guides were used in this section:
+# guide: https://rpubs.com/KarolinaSzczesna/862710
+# guide: https://rpubs.com/Bury/ClusteringOnPcaResults
+
+# cluster, then add cluster membership to sample properties
+fds_none_q3$samples$cluster <- cluster_pca(pca_res_none_q3)
+fds_none_tmm$samples$cluster <- cluster_pca(pca_res_none_tmm)
+fds_none_rle$samples$cluster <- cluster_pca(pca_res_none_rle)
+fds_none_qn$samples$cluster <- cluster_pca(pca_res_none_qn)
+
+fds_bgsub_q3$samples$cluster <- cluster_pca(pca_res_bgsub_q3)
+fds_bgsub_tmm$samples$cluster <- cluster_pca(pca_res_bgsub_tmm)
+fds_bgsub_rle$samples$cluster <- cluster_pca(pca_res_bgsub_rle)
+fds_bgsub_qn$samples$cluster <- cluster_pca(pca_res_bgsub_qn)
+
+fds_qq_q3$samples$cluster <- cluster_pca(pca_res_qq_q3)
+fds_qq_tmm$samples$cluster <- cluster_pca(pca_res_qq_tmm)
+fds_qq_rle$samples$cluster <- cluster_pca(pca_res_qq_rle)
+fds_qq_qn$samples$cluster <- cluster_pca(pca_res_qq_qn)
+
+# pca plot clustering
+cluster_none_q3 <- pca_plot_ipmn(fds_none_q3, pca_res_none_q3, PC1, PC2, cluster, study)
+cluster_none_tmm <- pca_plot_ipmn(fds_none_tmm, pca_res_none_tmm, PC1, PC2, cluster, study)
+cluster_none_rle <- pca_plot_ipmn(fds_none_rle, pca_res_none_rle, PC1, PC2, cluster, study)
+cluster_none_qn <- pca_plot_ipmn(fds_none_qn, pca_res_none_qn, PC1, PC2, cluster, study)
+
+cluster_bgsub_q3 <- pca_plot_ipmn(fds_bgsub_q3, pca_res_bgsub_q3, PC1, PC2, cluster, study)
+cluster_bgsub_tmm <- pca_plot_ipmn(fds_bgsub_tmm, pca_res_bgsub_tmm, PC1, PC2, cluster, study)
+cluster_bgsub_rle <- pca_plot_ipmn(fds_bgsub_rle, pca_res_bgsub_rle, PC1, PC2, cluster, study)
+cluster_bgsub_qn <- pca_plot_ipmn(fds_bgsub_qn, pca_res_bgsub_qn, PC1, PC2, cluster, study)
+
+cluster_qq_q3 <- pca_plot_ipmn(fds_qq_q3, pca_res_qq_q3, PC1, PC2, cluster, study)
+cluster_qq_tmm <- pca_plot_ipmn(fds_qq_tmm, pca_res_qq_tmm, PC1, PC2, cluster, study)
+cluster_qq_rle <- pca_plot_ipmn(fds_qq_rle, pca_res_qq_rle, PC1, PC2, cluster, study)
+cluster_qq_qn <- pca_plot_ipmn(fds_qq_qn, pca_res_qq_qn, PC1, PC2, cluster, study)
+
+# Grid column and row titles
+col_titles <- list(
+  wrap_elements(grid::textGrob('', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('Q3', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('TMM', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('RLE', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('QN', gp = grid::gpar(fontsize = 18, fontface = "bold")))
+)
+
+row_titles <- list(
+  wrap_elements(grid::textGrob('NONE', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('BGSub', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('QQ', gp = grid::gpar(fontsize = 18, fontface = "bold")))
+)
+
+# Create grid
+p <- wrap_plots(
+  col_titles[[1]], col_titles[[2]], col_titles[[3]], col_titles[[4]], col_titles[[5]],
+  row_titles[[1]], cluster_none_q3, cluster_none_tmm, cluster_none_rle, cluster_none_qn,
+  row_titles[[2]], cluster_bgsub_q3, cluster_bgsub_tmm, cluster_bgsub_rle, cluster_bgsub_qn,
+  row_titles[[3]], cluster_qq_q3, cluster_qq_tmm, cluster_qq_rle, cluster_qq_qn,
+  ncol = 5,
+  heights = c(0.1, 1, 1, 1),
+  widths = c(0.3, 1, 1, 1, 1)
+) +
+plot_layout(
+  guides = 'collect'
+) &
+theme(plot.margin = unit(c(0.5, 1, 1, 1), "cm"))
+
+# Add titles
+p <- p + 
+  plot_annotation(
+    title = "Effect of Background Correction and Normalization Methods on PCA Clustering"
+  ) & 
+  theme(
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5)
+  )
+
+f <- file.path(pca_dir, "pca_clustering_grid")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+```
+
+### Optimal clustering
+``` {r optimal clustering}
+npcs <- 3
+
+# assess optimal number of clusters
+x <- pca_res_qq_qn$x[,1:npcs]
+
+p <- fviz_nbclust(x, FUNcluster=cluster::pam, method="wss")
+f <- file.path(pca_dir, "pca_fviz_nbclust_wss")
+ggsave(paste0(f, ".png"), p, width=4, height=4)
+```
+
+### Assign names to clusters
+``` {r}
+
+fds_none_q3$samples <- fds_none_q3$samples %>% mutate(
+  cluster_name = case_when(cluster == "c1" ~ "pancreas",
+                           cluster == "c2" ~ "ln",
+                           cluster == "c3" ~ "colon",
+                           cluster == "c4" ~ "brain",
+                           cluster == "c5" ~ "kidney")
+)
+x <- bind_cols(fds_none_q3$samples, as_tibble(pca_res_none_q3$x))
+
+fds_none_tmm$samples <- fds_none_tmm$samples %>% mutate(
+  cluster_name = case_when(cluster == "c1" ~ "pancreas",
+                           cluster == "c2" ~ "colon",
+                           cluster == "c3" ~ "ln",
+                           cluster == "c4" ~ "brain",
+                           cluster == "c5" ~ "kidney")
+)
+x <- bind_cols(fds_none_tmm$samples, as_tibble(pca_res_none_tmm$x))
+
+fds_none_rle$samples <- fds_none_rle$samples %>% mutate(
+  cluster_name = case_when(cluster == "c1" ~ "pancreas",
+                           cluster == "c2" ~ "colon",
+                           cluster == "c3" ~ "ln",
+                           cluster == "c4" ~ "brain",
+                           cluster == "c5" ~ "kidney")
+)
+x <- bind_cols(fds_none_rle$samples, as_tibble(pca_res_none_rle$x))
+
+fds_none_qn$samples <- fds_none_qn$samples %>% mutate(
+  cluster_name = case_when(cluster == "c1" ~ "pancreas",
+                           cluster == "c2" ~ "ln",
+                           cluster == "c3" ~ "colon",
+                           cluster == "c4" ~ "brain",
+                           cluster == "c5" ~ "kidney")
+)
+x <- bind_cols(fds_none_qn$samples, as_tibble(pca_res_none_qn$x))
+
+
+fds_bgsub_q3$samples <- fds_bgsub_q3$samples %>% mutate(
+  cluster_name = case_when(cluster == "c1" ~ "pancreas",
+                           cluster == "c2" ~ "ln",
+                           cluster == "c3" ~ "colon",
+                           cluster == "c4" ~ "kidney",
+                           cluster == "c5" ~ "brain")
+)
+x <- bind_cols(fds_bgsub_q3$samples, as_tibble(pca_res_bgsub_q3$x))
+
+fds_bgsub_tmm$samples <- fds_bgsub_tmm$samples %>% mutate(
+  cluster_name = case_when(cluster == "c1" ~ "pancreas",
+                           cluster == "c2" ~ "ln",
+                           cluster == "c3" ~ "colon",
+                           cluster == "c4" ~ "kidney",
+                           cluster == "c5" ~ "brain")
+)
+x <- bind_cols(fds_bgsub_tmm$samples, as_tibble(pca_res_bgsub_tmm$x))
+
+fds_bgsub_rle$samples <- fds_bgsub_rle$samples %>% mutate(
+  cluster_name = case_when(cluster == "c1" ~ "pancreas",
+                           cluster == "c2" ~ "ln",
+                           cluster == "c3" ~ "colon",
+                           cluster == "c4" ~ "kidney",
+                           cluster == "c5" ~ "brain")
+)
+x <- bind_cols(fds_bgsub_rle$samples, as_tibble(pca_res_bgsub_rle$x))
+
+fds_bgsub_qn$samples <- fds_bgsub_qn$samples %>% mutate(
+  cluster_name = case_when(cluster == "c1" ~ "pancreas",
+                           cluster == "c2" ~ "ln",
+                           cluster == "c3" ~ "colon",
+                           cluster == "c4" ~ "kidney",
+                           cluster == "c5" ~ "brain")
+)
+x <- bind_cols(fds_bgsub_qn$samples, as_tibble(pca_res_bgsub_qn$x))
+
+
+fds_qq_q3$samples <- fds_qq_q3$samples %>% mutate(
+  cluster_name = case_when(cluster == "c1" ~ "pancreas",
+                           cluster == "c2" ~ "ln",
+                           cluster == "c3" ~ "colon",
+                           cluster == "c4" ~ "kidney",
+                           cluster == "c5" ~ "brain")
+)
+x <- bind_cols(fds_qq_q3$samples, as_tibble(pca_res_qq_q3$x))
+
+fds_qq_tmm$samples <- fds_qq_tmm$samples %>% mutate(
+  cluster_name = case_when(cluster == "c1" ~ "pancreas",
+                           cluster == "c2" ~ "ln",
+                           cluster == "c3" ~ "colon",
+                           cluster == "c4" ~ "brain",
+                           cluster == "c5" ~ "kidney")
+)
+x <- bind_cols(fds_qq_tmm$samples, as_tibble(pca_res_qq_tmm$x))
+
+fds_qq_rle$samples <- fds_qq_rle$samples %>% mutate(
+  cluster_name = case_when(cluster == "c1" ~ "pancreas",
+                           cluster == "c2" ~ "ln",
+                           cluster == "c3" ~ "colon",
+                           cluster == "c4" ~ "brain",
+                           cluster == "c5" ~ "kidney")
+)
+x <- bind_cols(fds_qq_rle$samples, as_tibble(pca_res_qq_rle$x))
+
+fds_qq_qn$samples <- fds_qq_qn$samples %>% mutate(
+  cluster_name = case_when(cluster == "c1" ~ "pancreas",
+                           cluster == "c2" ~ "ln",
+                           cluster == "c3" ~ "colon",
+                           cluster == "c4" ~ "kidney",
+                           cluster == "c5" ~ "brain")
+)
+x <- bind_cols(fds_qq_qn$samples, as_tibble(pca_res_qq_qn$x))
+```
+
+### Chi-squared analysis of clusters
+``` {r}
+# List of methods
+methods <- list(fds_none_q3, fds_none_tmm, fds_none_rle, fds_none_qn, 
+                fds_bgsub_q3, fds_bgsub_tmm, fds_bgsub_rle, fds_bgsub_qn, 
+                fds_qq_q3, fds_qq_tmm, fds_qq_rle, fds_qq_qn)
+
+# Initialize vectors to store Chi-squared statistics and p-values
+chi_squared_stats <- numeric(length(methods))
+method_names <- c("none_q3", "none_tmm", "none_rle", "none_qn",
+                   "bgsub_q3", "bgsub_tmm", "bgsub_rle", "bgsub_qn",
+                   "qq_q3", "qq_tmm", "qq_rle", "qq_qn")
+
+# Loop through each method
+for (i in seq_along(methods)) {
+  # Create the contingency table
+  contingency_table <- table(methods[[i]]$samples$study, methods[[i]]$samples$cluster_name)
+  
+  # Print the contingency table
+  print(contingency_table)
+  
+  # Perform the Chi-squared test
+  chi_squared_result <- chisq.test(contingency_table)
+  print(chi_squared_result)
+  
+  # Store the Chi-squared statistic and p-value
+  chi_squared_stats[i] <- chi_squared_result$statistic
+}
+
+# Format p-values to scientific notation
+p_values_formatted <- format(p_values, scientific = TRUE)
+
+# Combine results into a data frame
+results_df <- data.frame(
+  Method = method_names,
+  Chi_Squared_Statistic = chi_squared_stats
+ )
+
+# Print the results
+print(results_df)
 
 ```
 
-## FIGURE 5: DE
-``` {r de}
+# FIGURE 5: DE
+## DE analysis
+
+```{r}
+de_setup <- function(method_name, de_padj_cutoff=0.05, de_log2fc_cutoff=1) {
+  # access fds and log2_norm_cpm
+  fds_name <- paste0("fds_", method_name)
+  fds <- get(fds_name)
+  log2_name <- paste0("log2_norm_cpm_", method_name)
+  log2_norm_cpm <- get(log2_name)
+  
+  # init de results
+  de <- NULL
+  
+  # DE analysis of clusters
+  s <- fds$samples
+  y <- log2_norm_cpm[, s$aoi]
+  s$cluster <- factor(s$cluster_name, levels=c("pancreas", "ln", "brain", "colon", "kidney"))
+  
+  # compare each cluster to all of the rest
+  design <- model.matrix(~0 + cluster, s)
+  contrasts <- makeContrasts(clusterPanc = clusterpancreas - (clusterln + clusterbrain + clusterkidney + clustercolon)/4,
+                             clusterLn = clusterln - (clusterpancreas + clusterbrain + clusterkidney + clustercolon)/4,
+                             clusterBrain = clusterbrain - (clusterln + clusterpancreas + clusterkidney + clustercolon)/4,
+                             clusterKidney = clusterkidney - (clusterln + clusterbrain + clusterpancreas + clustercolon)/4,
+                             clusterColon = clustercolon - (clusterln + clusterbrain + clusterkidney + clusterpancreas)/4,
+                             levels = design)
+  
+  res <- run_limma_trend(y, design, contrasts,
+                         padj_cutoff=de_padj_cutoff,
+                         log2fc_cutoff=de_log2fc_cutoff)
+  
+  # write cluster results
+  file_name <- paste0("de_clusters_", method_name, ".xlsx")
+  write_xlsx(res, file.path(results_dir, file_name))
+  return(res)
+}
+
+run_limma_trend <- function(y, design, contrasts, padj_cutoff, log2fc_cutoff) {
+  fit <- lmFit(y, design)
+  fit <- contrasts.fit(fit, contrasts)
+  fit <- eBayes(fit, trend=TRUE)
+
+  x <- NULL
+  for (coef in colnames(contrasts)) {
+    res <- topTable(fit, coef=coef, number=Inf, sort.by="none")
+    res <- as_tibble(res, rownames="gene")
+    res <- res %>%
+      select(gene,
+             log2fc=logFC,
+             avgexpr=AveExpr,
+             pval=P.Value,
+             padj=adj.P.Val) %>%
+      mutate(de = case_when(padj > padj_cutoff ~ "no",
+                            log2fc < -log2fc_cutoff ~ "dn",
+                            log2fc > log2fc_cutoff ~ "up",
+                            TRUE ~ "no"),
+             contrast = coef)
+    x <- bind_rows(x, res)
+  }
+  return(x)
+}
+
+# res_none_q3 <- de_setup("none_q3")
+# res_none_tmm <- de_setup("none_tmm")
+# res_none_rle <- de_setup("none_rle")
+# res_none_qn <- de_setup("none_qn")
+# 
+# res_bgsub_q3 <- de_setup("bgsub_q3")
+# res_bgsub_tmm <- de_setup("bgsub_tmm")
+# res_bgsub_rle <- de_setup("bgsub_rle")
+# res_bgsub_qn <- de_setup("bgsub_qn")
+# 
+# res_qq_q3 <- de_setup("qq_q3")
+# res_qq_tmm <- de_setup("qq_tmm")
+# res_qq_rle <- de_setup("qq_rle")
+# res_qq_qn <- de_setup("qq_qn")
+
+# write tables
+# table(res_none_q3$contrast, res_none_q3$de)
+
+```
+
+## DE Volcano plots
+
+```{r de volcano plots}
+
+de <- NULL
+de <- bind_rows(de, res_qq_qn)
+
+plot_de_volcano <- function(res, nlabel=50) {
+  # label the top n up/down genes
+  label_data <- bind_rows(filter(res, de == "up") %>% slice_max(log2fc, n=nlabel),
+                          filter(res, de == "dn") %>% slice_min(log2fc, n=nlabel))
+  label_data <- distinct(label_data)
+
+  p <- ggplot(res, aes(x=log2fc, y=-log10(padj), color=de, size=de)) +
+    geom_point(alpha=0.7) +
+    geom_text_repel(data=label_data, color="black", size=3, aes(label=gene), max.overlaps=Inf) +
+    scale_color_manual(values=c("no"="grey", "dn"="blue", "up"="red")) +
+    scale_size_manual(values=c("no"=1, "dn"=2, "up"=2)) +
+    theme_minimal() +
+    theme(legend.position="bottom") +
+    theme(axis.line = element_line(color = "black")) +
+    labs(x="log2fc", y="-log10(padj)")
+  return(p)
+}
+
+volcano_dir <- file.path(plot_dir, "volcano")
+
+# volcano plots
+for (mycontrast in unique(de$contrast)) {
+  print(mycontrast)
+  x <- filter(de, contrast == mycontrast)
+  p <- plot_de_volcano(x) + 
+    labs(title="Volcano Plot", subtitle=mycontrast)
+  f <- paste0("volcano_de_", mycontrast)
+  ggsave(file.path(volcano_dir, paste0(f, ".pdf")), p, width=8, height=8)
+  ggsave(file.path(volcano_dir, paste0(f, ".png")), p, width=8, height=8)
+}
+
+```
+
+## DE Heatmaps
+
+```{r de heatmaps, include=FALSE}
+
+# heatmap functions
+plot_pheatmap <- function(m, 
+                          annot_col, 
+                          annot_row, 
+                          annot_colors,
+                          filename, width, height,
+                          xmin=-6, xmax=6) {
+  pheatmap(m,
+           scale = "none",
+           color = colorRampPalette(c("navy", "white", "firebrick3"))(50),
+           breaks = seq(xmin, xmax, length.out=51),
+           annotation_col = annot_col,
+           annotation_row = annot_row,
+           annotation_colors = annot_colors,
+           border_color = NA,
+           cluster_rows = TRUE,
+           cluster_cols = TRUE,
+           clustering_distance_rows = "euclidean",
+           clustering_distance_cols = "euclidean",
+           clustering_method = "ward.D2",
+#           cellwidth = 6,
+#           cellheight = 6,
+           fontsize = 6,
+           fontsize_row = 6,
+           fontsize_col = 6,
+           filename = filename, 
+           width = width,
+           height = height)
+}
+
+# setup heatmap annotations
+gene_annot <- fds_qq_qn$meta 
+# %>%
+#   left_join(hpa_pdac, by=c("gene"="gene_symbol")) %>%
+#   left_join(cptac_de_merged, by=c("gene"="gene_symbol")) %>%
+#   mutate(de_cptac_rna = replace_na(de_cptac_rna, "na"),
+#          de_cptac_prot = replace_na(de_cptac_prot, "na"))
+annot_row <- gene_annot %>%
+  select(gene) %>%
+  column_to_rownames("gene") %>%
+  as.data.frame()
+annot_col <- column_to_rownames(fds_qq_qn$samples, "aoi") %>%
+  select(patient, study, cluster_name) %>%
+  as.data.frame()
+
+#
+# IPMN clusters
+#
+# de gene params
+padj_cutoff <- 0.01
+log2fc_cutoff <- 3
+ntop <- 10
+contrasts <- c("clusterPanc", "clusterLn", "clusterKidney", "clusterColon", "clusterBrain")
+
+g <- filter(de_qq_qn, contrast %in% contrasts,
+            abs(log2fc) > log2fc_cutoff, 
+            padj < padj_cutoff) %>%
+  group_by(contrast, de) %>%
+  slice_max(abs(log2fc), n=ntop) %>%
+  ungroup() %>%
+  distinct(gene) %>% 
+  pull(gene)
+ngenes <- length(g)
+cluster_marker_genes <- g
+
+# centered gene expression (subtract median)
+s <- fds_qq_qn$samples
+x <- log2_norm_cpm_qq_qn[g, s$aoi]
+u <- apply(x, 1, mean)
+x <- sweep(x, 1, u, FUN="-")
+xmin <- -6
+xmax <- 6
+
+# heatmap
+heatmap_dir <- file.path(plot_dir, "heatmap")
+
+f <- file.path(plot_dir,  paste0("heatmap_de_cluster_markers_", ngenes, "_genes"))
+h <- 6
+w <- 6
+p <- plot_pheatmap(x, 
+                   annot_col[s$aoi,], 
+                   annot_row[g,], 
+                   annot_colors=scale_color_continuous(),
+                   filename=paste0(f, ".png"), 
+                   width=w, height=h,
+                   xmin=xmin, xmax=xmax)
+save_pheatmap_pdf(p, filename=paste0(f, ".pdf"), width=w, height=h)
+
+
+```
+
+
+## PCA feature plots for marker genes
+
+```{r pca feature plot for each marker gene, include=FALSE}
+
+s <- fds_qq_qn$samples
+y <- log2_norm_cpm_qq_qn
+feature_plot_genes <- c("MS4A1", "CPA1", "SNAP25", "IGHA1", "IGHG1")
+
+for (gene in feature_plot_genes) {
+  print(gene)
+  x <- bind_cols(s, as_tibble(pca_res_qq_qn$x), gene=unlist(y[gene,]))
+  p <- ggplot(x, aes(x=PC1, y=PC2, color=gene, shape=study)) +
+    geom_point(alpha = 0.8, size=3) +
+    scale_color_viridis_c() +
+    theme_minimal() +
+    theme(aspect.ratio=1) +
+    labs(x="PC1", y="PC2", title=gene)
+  f <- file.path(plot_dir, paste0("pca_featureplot_", gene))
+  ggsave(paste0(f, ".pdf"), plot=p, width=5, height=5)
+  ggsave(paste0(f, ".png"), plot=p, width=5, height=5)
+}
+
+```
+
+
+## DE 2D scatter plots
+
+```{r ipmn de 2d scatter plots}
+
+plot_de_scatter2d <- function(tbl, xcontrast, ycontrast, nlabel=10, 
+                              highlight_genes=NULL) {
+  if (is.null(highlight_genes)) {
+    highlight_genes <- c()
+  }
+  xde <- sym(paste0("de_", xcontrast))
+  yde <- sym(paste0("de_", ycontrast))
+  xlog2fc <- sym(paste0("log2fc_", xcontrast))
+  ylog2fc <- sym(paste0("log2fc_", ycontrast))
+
+  x <- tbl %>% 
+    mutate(subtype = paste0("x", {{xde}}, "_", "y", {{yde}}),
+           log2fc_abs_x = case_when({{xde}} == "no" ~ 0,
+                                    TRUE ~ abs({{xlog2fc}})),
+           log2fc_abs_y = case_when({{yde}} == "no" ~ 0,
+                                    TRUE ~ abs({{ylog2fc}})),
+           log2fc_abs_max = pmax(log2fc_abs_x, log2fc_abs_y))
+  
+  color_scale = c(xno_yno = "#888888",
+                  xup_yup = "#FF0000",
+                  xdn_ydn = "#0000aa",
+                  xup_ydn = "#eeee00",
+                  xdn_yup = "#ff00ff",
+                  xup_yno = "#32cd32",
+                  xdn_yno = "#670092",
+                  xno_yup = "#ff6700",
+                  xno_ydn = "#16ccc4")
+  size_scale = c(xno_yno = 1, 
+                 xup_yup = 2,
+                 xdn_ydn = 2,
+                 xup_ydn = 2,
+                 xdn_yup = 2,
+                 xup_yno = 2,
+                 xdn_yno = 2,
+                 xno_yup = 2,
+                 xno_ydn = 2)
+  
+  annot_data <- filter(x, subtype != "xno_yno")
+  none_data <- filter(x, subtype == "xno_yno")
+  label_data <- annot_data %>% 
+    group_by(subtype) %>%
+    slice_max(log2fc_abs_max, n=nlabel) %>%
+    ungroup()
+  highlight_data <- filter(x, gene %in% highlight_genes)
+
+  p <- ggplot(x, aes(x={{xlog2fc}}, 
+                     y={{ylog2fc}},
+                     color=subtype, 
+                     size=subtype)) +
+    geom_point(data=none_data, alpha=0.4) + 
+    geom_point(data=annot_data, alpha=0.8) +
+    geom_text_repel(data=label_data, color="black", size=3, aes(label=gene), max.overlaps=Inf) + 
+    geom_point(data=highlight_data, pch=21, fill=NA, size=5, colour="#ffff00", stroke=1) + 
+    geom_point(data=highlight_data, pch=21, fill=NA, size=4, colour="#222222", stroke=1, alpha=0.5) +
+    geom_text_repel(data=highlight_data, color="black", size=3, aes(label=gene), max.overlaps=Inf) +     
+    scale_color_manual(values = color_scale) +
+    scale_size_manual(values = size_scale, guide = "none") + 
+    theme_minimal() +
+    xlab(rlang::as_string(xlog2fc)) +
+    ylab(rlang::as_string(ylog2fc)) +
+    labs(color = "DE Genes")
+  return(p)
+}
+
+
+# merge de analysis by gene
+de_merged <- de_qq_qn %>% select(gene, contrast, log2fc, padj, de) %>%
+  pivot_wider(names_from = contrast, values_from = c(log2fc, padj, de))
+nlabel <- 10
+width <- 8
+height <- 8
+
+#
+# IPMN Clusters
+#
+p <- plot_de_scatter2d(de_merged, 
+                       xcontrast="clusterColon", 
+                       ycontrast="clusterLn", 
+                       nlabel=nlabel) +
+  labs(title="IPMN Specimens", 
+       subtitle="clusterColon (x-axis) clusterLn (y-axis)")
+f <- file.path(plot_dir, "scatter2d_de_x_clusterColon_y_clusterLn")
+ggsave(paste0(f, ".pdf"), plot=p, width=8, height=8)
+ggsave(paste0(f, ".png"), plot=p, width=8, height=8)
 
 ```
 
