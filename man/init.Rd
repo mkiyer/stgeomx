@@ -13,7 +13,7 @@ init(samples, meta, counts, x)
 
 \item{counts}{tibble with gene count data}
 
-\item{x}{tibble with gene count data}
+\item{x}{tibble with normalized gene count data}
 }
 \value{
 dataset
