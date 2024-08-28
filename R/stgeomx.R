@@ -85,7 +85,7 @@ copy <- function(ds) {
 #' @examples
 #' # example code
 #' data(example_ds, package= "stgeomx")
-#' merge_ds(example_ds, example_ds)
+#' merge(example_ds, example_ds)
 #'
 merge <- function(a, b) {
   # merge sample tables

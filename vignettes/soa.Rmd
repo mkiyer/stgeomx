@@ -19,6 +19,7 @@ library(tidyverse)
 library(readxl)
 library(ggrepel)
 library(pheatmap)
+library(patchwork)
 
 # bioconductor packages
 library(factoextra)
@@ -472,36 +473,36 @@ pca_plot <- function(x, xvar, yvar, color_by, shape_by) {
 
 
 # bg_auc
-p12 <- pca_plot(x, PC1, PC2, bg_auc, path_specimen)
-p13 <- pca_plot(x, PC1, PC3, bg_auc, path_specimen)
-p23 <- pca_plot(x, PC2, PC3, bg_auc, path_specimen)
+p12 <- pca_plot(x, PC1, PC2, bg_auc)
+p13 <- pca_plot(x, PC1, PC3, bg_auc)
+p23 <- pca_plot(x, PC2, PC3, bg_auc)
 p <- p12 + p13 + p23 + 
   plot_layout(guides = "collect")
 f <- file.path(plot_dir, paste0("pca_bg_auc_pc123.pdf"))
 ggsave(f, plot=p, device="pdf", width=12, height=6)
 
 # subset
-p12 <- pca_plot(x, PC1, PC2, subset, path_specimen)
-p13 <- pca_plot(x, PC1, PC3, subset, path_specimen)
-p23 <- pca_plot(x, PC2, PC3, subset, path_specimen)
+p12 <- pca_plot(x, PC1, PC2, subset)
+p13 <- pca_plot(x, PC1, PC3, subset)
+p23 <- pca_plot(x, PC2, PC3, subset)
 p <- p12 + p13 + p23 + 
   plot_layout(guides = "collect")
 f <- file.path(plot_dir, paste0("pca_region_pc123.pdf"))
 ggsave(f, plot=p, device="pdf", width=12, height=6)
 
 # patient
-p12 <- pca_plot(x, PC1, PC2, patient, path_specimen)
-p13 <- pca_plot(x, PC1, PC3, patient, path_specimen)
-p23 <- pca_plot(x, PC2, PC3, patient, path_specimen)
+p12 <- pca_plot(x, PC1, PC2, patient)
+p13 <- pca_plot(x, PC1, PC3, patient)
+p23 <- pca_plot(x, PC2, PC3, patient)
 p <- p12 + p13 + p23 + 
   plot_layout(guides = "collect")
 f <- file.path(plot_dir, paste0("pca_patient_pc123.pdf"))
 ggsave(f, plot=p, device="pdf", width=12, height=6)
 
 # path_subtype
-p12 <- pca_plot(x, PC1, PC2, path_subtype, path_specimen)
-p13 <- pca_plot(x, PC1, PC3, path_subtype, path_specimen)
-p23 <- pca_plot(x, PC2, PC3, path_subtype, path_specimen)
+p12 <- pca_plot(x, PC1, PC2, path_subtype)
+p13 <- pca_plot(x, PC1, PC3, path_subtype)
+p23 <- pca_plot(x, PC2, PC3, path_subtype)
 p <- p12 + p13 + p23 + 
   plot_layout(guides = "collect")
 f <- file.path(plot_dir, paste0("pca_path_subtype_pc123.pdf"))
@@ -516,14 +517,15 @@ p <- p12 + p13 + p23 +
 f <- file.path(plot_dir, paste0("pca_path_specimen_pc123.pdf"))
 ggsave(f, plot=p, device="pdf", width=12, height=6)
 
-# segment
-p12 <- pca_plot(x, PC1, PC2, segment)
-p13 <- pca_plot(x, PC1, PC3, segment)
-p23 <- pca_plot(x, PC2, PC3, segment)
+# path_aoi
+p12 <- pca_plot(x, PC1, PC2, path_aoi)
+p13 <- pca_plot(x, PC1, PC3, path_aoi)
+p23 <- pca_plot(x, PC2, PC3, path_aoi)
 p <- p12 + p13 + p23 + 
   plot_layout(guides = "collect")
-f <- file.path(plot_dir, paste0("pca_segment_pc123.pdf"))
+f <- file.path(plot_dir, paste0("pca_path_aoi_pc123.pdf"))
 ggsave(f, plot=p, device="pdf", width=12, height=6)
+
 ```
 
 
