@@ -218,14 +218,16 @@ plot_gene_filter <- function(ds, min_frac_expr=0) {
 }
 
 
-
 #'
-#' qc plot to assess relationship of bg versus gene
+#' qc plot of background noise (x axis) versus gene quantiles (y axis)
+#' uses sample metadata column 'keep' to filter aois before plotting
+#' uses gene metadata column 'keep' to filter genes before plotting
 #'
 #' @import ggplot2
 #' @import patchwork
 #'
 #' @param ds list dataset
+#' @param logscale TRUE for log scale, FALSE for linear scale
 #' @param quantiles vector of quantiles [0.0-1.0]
 #' @returns ggplot object
 #' @export
@@ -233,96 +235,41 @@ plot_gene_filter <- function(ds, min_frac_expr=0) {
 #' @examples
 #' data(example_ds, package = "stgeomx")
 #' example_ds <- preprocess(example_ds)
-#' plot_bgcorrect1(example_ds)
+#' plot_bgcorrect(example_ds)
 #'
-plot_bgcorrect1 <- function(ds, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0.99)) {
+plot_bgcorrect <- function(ds, logscale=TRUE, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0.99)) {
   # labels for plot legend
   quant_names <- paste0("q", round(100 * quantiles))
-  s <- select(ds$samples, "aoi", "slide", "keep")
-  x <- ds$x
-
-  # bg cpm before bgcorrect
+  # gene metadata
   bg <- ds$meta$bg
-  xbg <- filter(cpm(ds$counts), bg)
-  qbg <- xbg %>%
-    reframe(across(everything(), ~ stats::quantile(.x, quantiles))) %>%
-    mutate(name="bg", quant=quant_names)
+  keep <- ds$meta$keep
 
-  # gene cpm before bgcorrect
-  xgene <- filter(ds$counts, !bg)
-  xgene <- as_tibble(cpm(xgene))
-  qgene <- xgene %>%
-    reframe(across(everything(), ~ stats::quantile(.x, quantiles))) %>%
-    mutate(name="gene", quant=quant_names)
+  # sample columns used for plot
+  s <- ds$samples %>% filter(.data$keep) %>% select("aoi", "slide")
 
-  # cpm after bgcorrect
-  y <- as_tibble(cpm(x[!bg, ]))
-  qy <- y %>%
-    reframe(across(everything(), ~ stats::quantile(.x, quantiles))) %>%
-    mutate(name="y", quant=quant_names)
+  # gene raw and normalized count data
+  # only use genes passing filter ('keep' metadata)
+  x <- ds$x[(!bg) & keep, s$aoi]
+  counts <- ds$counts[(!bg) & keep, s$aoi]
 
-  # combine bg and gene quantiles
-  q <- bind_rows(qbg, qgene, qy) %>%
-    tidyr::pivot_longer(colnames(x), names_to="aoi", values_to="value") %>%
-    tidyr::pivot_wider(names_from="name", values_from="value", names_prefix="") %>%
-    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
-
-  p1 <- ggplot(q, aes(x=.data$bg+1, y=.data$gene+1, color=.data$quant, shape=.data$keep)) +
-    geom_point(alpha=0.6) +
-    geom_smooth(data=filter(q, .data$keep), linetype='dashed', method = 'lm',
-                formula = y ~ x, se=FALSE, alpha=0.6) +
-    scale_color_viridis_d(option="plasma") +
-    scale_x_log10() +
-    scale_y_log10() +
-    theme_minimal()
-
-  p2 <- ggplot(q, aes(x=.data$bg+1, y=.data$y+1, color=.data$quant, shape=.data$keep)) +
-    geom_point(alpha=0.6) +
-    geom_smooth(data=filter(q, .data$keep), linetype='dashed', method = 'lm',
-                formula = y ~ x, se=FALSE, alpha=0.6) +
-    scale_color_viridis_d(option="plasma") +
-    scale_x_log10() +
-    scale_y_log10() +
-    theme_minimal()
-  return(p1 + p2)
-}
-
-
-#'
-#' plot total background noise (x axis) versus gene quantiles (y axis)
-#'
-#' @import ggplot2
-#' @import patchwork
-#'
-#' @param ds list dataset
-#' @param quantiles vector of quantiles [0.0-1.0]
-#' @returns ggplot object
-#' @export
-#'
-#' @examples
-#' data(example_ds, package = "stgeomx")
-#' example_ds <- preprocess(example_ds)
-#' plot_bgcorrect2(example_ds)
-#'
-plot_bgcorrect2 <- function(ds, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0.99)) {
-  s <- select(ds$samples, "aoi", "slide", "keep")
-  x <- ds$x
-  bg <- ds$meta$bg
+  # bg raw and normalized counts
+  xbg <- ds$x[bg, s$aoi]
+  countsbg <- ds$counts[bg, s$aoi]
+  total_counts <- colSums(ds$counts[, s$aoi])
 
   # compute background level per aoi
-  s$bg_cpm <- 1e6 * colSums(ds$counts[bg,]) / colSums(ds$counts)
-  # labels for plot legend
-  quant_names <- paste0("q", round(100 * quantiles))
+  s$bg_cpm <- 1e6 * colSums(countsbg) / total_counts
+  # average background cpm per probe is a clearer metric
+  s$bg_cpm <- s$bg_cpm / nrow(xbg)
 
-  # gene cpm before bgcorrect
-  xgene <- filter(ds$counts, !bg)
-  xgene <- as_tibble(cpm(xgene))
+  # raw count gene cpm
+  xgene <- as_tibble(cpm(counts))
   qgene <- xgene %>%
     reframe(across(everything(), ~ stats::quantile(.x, quantiles))) %>%
     mutate(name="gene", quant=quant_names)
 
-  # cpm after bgcorrect
-  y <- as_tibble(cpm(x[!bg, ]))
+  # normalized gene cpm
+  y <- as_tibble(cpm(x))
   qy <- y %>%
     reframe(across(everything(), ~ stats::quantile(.x, quantiles))) %>%
     mutate(name="y", quant=quant_names)
@@ -331,94 +278,30 @@ plot_bgcorrect2 <- function(ds, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0
   q <- bind_rows(qgene, qy) %>%
     tidyr::pivot_longer(colnames(x), names_to="aoi", values_to="value") %>%
     tidyr::pivot_wider(names_from="name", values_from="value", names_prefix="") %>%
-    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
+    inner_join(s, by=join_by("aoi"), suffix=c("_gene", "_aoi"))
 
-  p1 <- ggplot(q, aes(x=.data$bg_cpm, y=.data$gene+1, color=.data$quant, shape=.data$keep)) +
+  p1 <- ggplot(q, aes(x=.data$bg_cpm+1, y=.data$gene+1, color=.data$quant)) +
     geom_point(alpha=0.6) +
-    geom_smooth(data=filter(q, .data$keep), linetype='dashed', method = 'lm',
-                formula = y ~ x, se=FALSE, alpha=0.6) +
+    geom_smooth(linetype='dashed', method = 'lm', formula = y ~ x, se=FALSE, alpha=0.6) +
     scale_color_viridis_d(option="plasma") +
-    scale_x_log10() +
-    scale_y_log10() +
-    theme_minimal()
+    theme_minimal() +
+    labs(x="Mean Noise (CPM)", y="Raw Counts (CPM)")
 
-  p2 <- ggplot(q, aes(x=.data$bg_cpm, y=.data$y+1, color=.data$quant, shape=.data$keep)) +
+  p2 <- ggplot(q, aes(x=.data$bg_cpm+1, y=.data$y+1, color=.data$quant)) +
     geom_point(alpha=0.6) +
-    geom_smooth(data=filter(q, .data$keep), linetype='dashed', method = 'lm',
-                formula = y ~ x, se=FALSE, alpha=0.6) +
+    geom_smooth(linetype='dashed', method = 'lm', formula = y ~ x, se=FALSE, alpha=0.6) +
     scale_color_viridis_d(option="plasma") +
-    scale_x_log10() +
-    scale_y_log10() +
-    theme_minimal()
+    theme_minimal() +
+    labs(x="Mean Noise (CPM)", y="Normalized Counts (CPM)")
+
+  if (logscale) {
+    p1 <- p1 + scale_x_continuous(trans = "log2") +
+      scale_y_continuous(trans = "log2")
+    p2 <- p2 + scale_x_continuous(trans = "log2") +
+      scale_y_continuous(trans = "log2")
+  }
   return(p1 + p2)
 }
-
-
-
-#'
-#' plot total background noise (x axis) versus gene quantiles (y axis)
-#'
-#' @import ggplot2
-#' @import patchwork
-#'
-#' @param ds list dataset
-#' @param quantiles vector of quantiles [0.0-1.0]
-#' @returns ggplot object
-#' @export
-#'
-#' @examples
-#' data(example_ds, package = "stgeomx")
-#' example_ds <- preprocess(example_ds)
-#' plot_bgcorrect3(example_ds)
-#'
-plot_bgcorrect3 <- function(ds, quantiles=c(0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 0.99)) {
-  s <- select(ds$samples, "aoi", "keep")
-  x <- ds$x
-  bg <- ds$meta$bg
-
-  # compute background level per aoi
-  s$bg_cpm <- 1e6 * colSums(ds$counts[bg,]) / colSums(ds$counts)
-  # labels for plot legend
-  quant_names <- paste0("q", round(100 * quantiles))
-
-  # raw gene counts
-  xgene <- filter(ds$counts, !bg)
-  qgene <- xgene %>%
-    reframe(across(everything(), ~ stats::quantile(.x, quantiles))) %>%
-    mutate(name="gene", quant=quant_names)
-
-  # normalized counts
-  y <- as_tibble(x[!bg, ])
-  qy <- y %>%
-    reframe(across(everything(), ~ stats::quantile(.x, quantiles))) %>%
-    mutate(name="y", quant=quant_names)
-
-  # combine bg and gene quantiles
-  q <- bind_rows(qgene, qy) %>%
-    tidyr::pivot_longer(colnames(x), names_to="aoi", values_to="value") %>%
-    tidyr::pivot_wider(names_from="name", values_from="value", names_prefix="") %>%
-    inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
-
-  p1 <- ggplot(q, aes(x=.data$bg_cpm, y=.data$gene+1, color=.data$quant, shape=.data$keep)) +
-    geom_point(alpha=0.6) +
-    geom_smooth(data=filter(q, .data$keep), linetype='dashed', method = 'lm',
-                formula = y ~ x, se=FALSE, alpha=0.6) +
-    scale_color_viridis_d(option="plasma") +
-    scale_x_log10() +
-    scale_y_log10() +
-    theme_minimal()
-
-  p2 <- ggplot(q, aes(x=.data$bg_cpm, y=.data$y+1, color=.data$quant, shape=.data$keep)) +
-    geom_point(alpha=0.6) +
-    geom_smooth(data=filter(q, .data$keep), linetype='dashed', method = 'lm',
-                formula = y ~ x, se=FALSE, alpha=0.6) +
-    scale_color_viridis_d(option="plasma") +
-    scale_x_log10() +
-    scale_y_log10() +
-    theme_minimal()
-  return(p1 + p2)
-}
-
 
 
 #'
@@ -487,72 +370,4 @@ plot_expr_dist <- function(ds, bg.lod.quantile=0.9) {
 
 
 
-# st_geomx_plot_bgcorrect <- function(ds, x) {
-#   s <- ds$samples
-#   m <- ds$meta
-#
-#   s <- select(s, "aoi", "slide", "keep")
-#   y <- bind_cols(m, x)
-#   y <- y %>%
-#     tidyr::pivot_longer(colnames(x), names_to="aoi", values_to="count") %>%
-#     inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi")) %>%
-#     group_by(.data$aoi, .data$bg) %>%
-#     summarise(keep_aoi = first(.data$keep_aoi),
-#               slide = first(.data$slide),
-#               gmcpm = geomean(count))
-#
-#   p1 <- ggplot(y, aes(x=.data$gmcpm,
-#                       y=stats::reorder(factor(.data$aoi), .data$gmcpm),
-#                       color=factor(.data$bg))) +
-#     geom_point(size=1, alpha=0.5) +
-#     scale_x_log10() +
-#     scale_color_manual(values = pals::cols25()) +
-#     theme_minimal() +
-#     theme(axis.text.y = element_blank(),
-#           panel.grid.major.y = element_blank(),
-#           panel.grid.minor.y = element_blank()) +
-#     labs(color = "BG", x="CPM", y="AOI") +
-#     facet_wrap(~ .data$keep_aoi)
-#
-#   y <- y %>%
-#     tidyr::pivot_wider(names_from="bg", values_from="gmcpm", names_prefix="bg_")
-#   ykeep <- filter(y, .data$keep_aoi)
-#   bg_gene_cor <- stats::cor.test(ykeep$bg_TRUE, ykeep$bg_FALSE)$estimate
-#   label_cor <- sprintf("Correlation r = %.2f", bg_gene_cor)
-#   p2 <- ggplot(y, aes(x=.data$bg_TRUE, y=.data$bg_FALSE, color=.data$keep_aoi)) +
-#     geom_point(alpha=0.6) +
-#     geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, color="black", linetype="dashed") +
-#     scale_x_log10() +
-#     scale_y_log10() +
-#     scale_color_manual(values = pals::cols25()) +
-#     theme_minimal() +
-#     labs(color="Keep AOI",
-#          x="bg cpm", y="gene cpm",
-#          subtitle=label_cor) +
-#     facet_wrap(~ .data$keep_aoi)
-#   return(p1 / p2)
-# }
-
-
-
-# st_geomx_plot_bgcorrect_density <- function(ds, x) {
-#
-#   s <- select(ds$samples, "aoi", "slide", "keep")
-#   x <- bind_cols(ds$meta, x)
-#   x <- x %>%
-#     tidyr::pivot_longer(s$aoi, names_to="aoi", values_to="value") %>%
-#     inner_join(s, by=c("aoi"="aoi"), suffix=c("_gene", "_aoi"))
-#   colnames(x)
-#
-#   p <- ggplot(x, aes(x=.data$value, y=stats::reorder(factor(.data$aoi), .data$value), fill=factor(.data$bg))) +
-#     ggridges::stat_density_ridges(color="#ffffff00", alpha=0.4, scale=20,
-#                                   rel_min_height=0.001, quantile_lines=FALSE) +
-#     scale_x_continuous(trans="log10") +
-#     scale_fill_manual(values = pals::cols25()) +
-#     ggridges::theme_ridges() +
-#     theme(axis.text.y = element_blank()) +
-#     labs(x="Value", y="AOI", fill="BG") +
-#     facet_wrap(~ .data$keep_aoi, scales="free_y", ncol=1)
-#   return(p)
-# }
 

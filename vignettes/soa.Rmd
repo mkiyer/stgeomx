@@ -40,24 +40,6 @@ add_study_field <- function(ds, study) {
   return(list(samples = s, meta = ds$meta, counts = ds$counts))
 }
 
-# merge_ds <- function(a, b) {
-#   # merge sample tables
-#   sample_cols <- intersect(colnames(a$samples), colnames(b$samples))
-#   s <- bind_rows(select(a$samples, all_of(sample_cols)),
-#                  select(b$samples, all_of(sample_cols)))
-#   # merge count data
-#   a_counts <- bind_cols(select(a$meta, probe, gene, bg), a$counts)
-#   b_counts <- bind_cols(select(b$meta, probe, gene, bg), b$counts)
-#   counts <- inner_join(a_counts, b_counts, by=c("probe", "gene", "bg"),
-#                        relationship="one-to-one")
-#   # break into metadata and count data
-#   meta <- select(counts, -all_of(s$aoi))
-#   counts <- select(counts, all_of(s$aoi))
-#   
-#   # make new dataset object
-#   ds <- stgeomx::init(samples=s, meta=meta, counts=counts, x=counts)
-#   return(ds)
-# }
 
 save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
   stopifnot(!missing(x))
@@ -75,7 +57,8 @@ save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
 ```{r input files, include=FALSE}
 
 # input directories (EDITED)
-working_dir <- "/Users/madisoncaldwell/Desktop/stgeomx"
+#working_dir <- "/Users/madisoncaldwell/Desktop/stgeomx"
+working_dir <- "~/University of Michigan Dropbox/MED-mctp-iyerlab/projects/stgeomx_methods"
 
 # geomx data file location
 geomx_dir <- file.path(working_dir, "geomx")
@@ -222,7 +205,7 @@ ggsave(paste0(f, ".png"), p, width=w, height=h)
 ggsave(paste0(f, ".pdf"), p, width=w, height=h)
 
 # plot background correction (before and after)
-p <- stgeomx::plot_bgcorrect2(fds)
+p <- stgeomx::plot_bgcorrect(fds)
 p
 w <- 8
 h <- 8
