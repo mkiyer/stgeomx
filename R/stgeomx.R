@@ -93,8 +93,8 @@ merge <- function(a, b) {
   s <- bind_rows(select(a$samples, all_of(sample_cols)),
                  select(b$samples, all_of(sample_cols)))
   # merge count data
-  a_counts <- bind_cols(select(a$meta, probe, gene, bg), a$counts)
-  b_counts <- bind_cols(select(b$meta, probe, gene, bg), b$counts)
+  a_counts <- bind_cols(select(a$meta, .data$probe, .data$gene, .data$bg), a$counts)
+  b_counts <- bind_cols(select(b$meta, .data$probe, .data$gene, .data$bg), b$counts)
   # counts <- inner_join(a_counts, b_counts, by=c("probe", "gene", "bg"),
   #                      relationship="one-to-one")
 

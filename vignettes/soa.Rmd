@@ -69,18 +69,6 @@ ipmn_geomx_xlsx <- system.file("extdata", "duke_ipmn_wta_data.xlsx", package = "
 ipmn_geomx_annot_xlsx <- system.file("extdata", "duke_ipmn_wta_annot.xlsx", package = "stgeomx")
 
 #
-# output directory settings
-#
-results_dir <- file.path(working_dir, "results")
-plot_dir <- file.path(results_dir, "plots")
-# create output directories
-for (d in c(results_dir, plot_dir)) {
-  if (!dir.exists(d)) {
-    dir.create(d)
-  }
-}
-
-#
 # filtering parameter settings
 #
 # gene probes must be greater than the Nth quantile of the noise/background
@@ -160,24 +148,15 @@ p <- stgeomx::plot_aoi_filter(ds,
                               min_auc=geomx_min_auc,
                               min_frac_expr=geomx_aoi_min_frac_expr)
 p
-w <- 9
-h <- 4
-f <- file.path(plot_dir, "qc_aoi_filtering")
-ggsave(paste0(f, ".png"), p, width=w, height=h)
-ggsave(paste0(f, ".pdf"), p, width=w, height=h)
 
 ```
 
 ## QC: Gene Filtering
 
 ```{r gene filtering}
+
 p <- stgeomx::plot_gene_filter(ds, geomx_gene_min_frac_expr)
 p
-w <- 7
-h <- 7
-f <- file.path(plot_dir, "qc_gene_filtering")
-ggsave(paste0(f, ".png"), p, width=w, height=h)
-ggsave(paste0(f, ".pdf"), p, width=w, height=h)
 
 ```
 
@@ -195,20 +174,10 @@ fds <- stgeomx::normalize(fds, norm_method)
 # plot expression distribution
 p <- stgeomx::plot_expr_dist(fds)
 p
-w <- 8
-h <- 8
-f <- file.path(plot_dir, "qc_expr_dist")
-ggsave(paste0(f, ".png"), p, width=w, height=h)
-ggsave(paste0(f, ".pdf"), p, width=w, height=h)
 
 # plot background correction (before and after)
 p <- stgeomx::plot_bgcorrect(fds)
 p
-w <- 8
-h <- 8
-f <- file.path(plot_dir, "qc_bgcorrect")
-ggsave(paste0(f, ".png"), p, width=w, height=h)
-ggsave(paste0(f, ".pdf"), p, width=w, height=h)
 
 # background correction must use original unfiltered matrix
 fds <- stgeomx::bgcorrect(ds, method=bgcorrect_method,
@@ -232,110 +201,63 @@ log2_norm_cpm <- log2(fds$x + 1)
 # Downstream data analysis 
 
 ## Highly variable genes (updated)
+
 ```{r highly variable genes, include=FALSE}
-most_var_genes <- function(x, ntop=500, span=0.50) {
-  tbl <- bind_cols(
-    u = rowMeans(x),
-    v = apply(x, 1, function(x) var(x))
-  )
-  lovar <- loess(v ~ u, data=tbl, span=span)
-  tbl$lovar <- predict(lovar)
-  tbl$vadj <- tbl$v - tbl$lovar
-  keep <- order(tbl$vadj, decreasing=TRUE)[seq_len(min(ntop, nrow(tbl)))]
-  return(x[keep,])
-}
-
-maplot <- function(y, ntop=1000, nlabel=100, myspan=0.5) {
-  tbl <- bind_cols(
-    g = rownames(y),
-    u = rowMeans(y),
-    v = apply(y, 1, function(x) var(x))
-  )
-  lovar <- loess(v ~ u, data=tbl, span=myspan)
-  tbl$lovar <- predict(lovar)
-  tbl$vadj <- tbl$v - tbl$lovar
-  tbl <- tbl %>% 
-    mutate(rank = min_rank(-vadj)) %>%
-    arrange(rank)
-  label_data <- filter(tbl, rank <= nlabel)
-  top_data <- filter(tbl, rank < ntop)
-  bot_data <- filter(tbl, rank >= ntop)
-  p <- ggplot(tbl) +
-    geom_point(data=bot_data, aes(u, v), alpha=0.5, size=1, color="#aaaaaa") +
-    geom_point(data=top_data, aes(u, v), alpha=0.8, size=2, color="#ffaaaa") +
-    geom_line(aes(u, lovar), color="blue") +
-    geom_text_repel(data=label_data, aes(u, v, label=g), color="black", size=3, max.overlaps=Inf) +
-    theme_minimal()
-  return(p)
-}
-
-heatmap_genes <- function(s, x, filename="heatmap.pdf", width=10, height=10) {
-  s <- s %>% mutate(
-    noise_quantile = ntile(desc(bg_auc), 8)
-  )
-  annot_col <- column_to_rownames(s, "aoi") %>%
-    select(patient, path_specimen, path_aoi, noise_quantile) %>%
-    as.data.frame()
-  p <- pheatmap(x,
-                scale="row",
-                show_rownames=TRUE,
-                show_colnames=FALSE,
-                border_color=NA,
-                clustering_distance_rows = "euclidean",
-                clustering_distance_cols = "euclidean",
-                clustering_method = "ward.D2",
-                # clustering_method = "average",
-                # clustering_distance_rows = "correlation",
-                # clustering_distance_cols = "correlation",
-                breaks = seq(-3, 3, 0.05),
-                color = colorRampPalette(c("purple3", "black", "yellow2"))(120),
-                annotation_col = annot_col,
-                # annotation_colors = color_scales,
-                fontsize=4,
-                filename=filename,
-                width=width,
-                height=height)
-  return(p)
-}
 
 y <- log2_norm_cpm
-ntop <- 1000
-nlabel <- 100
-myspan <- 0.5
+ntop <- 250
+nlabel <- 50
+loess_span <- 0.25
+min_var_quantile <- 0.01
 
-# maplot
-p <- maplot(log2_norm_cpm, ntop=ntop, nlabel=nlabel, myspan=myspan)
-f <- file.path(plot_dir, paste0("maplot"))
-ggsave(paste0(f, ".pdf"), plot=p, width=10, height=10)
-ggsave(paste0(f, ".png"), plot=p, width=10, height=10)
+# model and plot highly variable genes
+p <- stgeomx::plot_hvg_model(log2_norm_cpm,
+                             nhvg=ntop,
+                             nlabel=nlabel,
+                             loess.span = loess_span,
+                             min_var_quantile = min_var_quantile)
+p
 
 # select most variable genes
-ntop <- 500
-myspan <- 0.5
-s <- fds$samples
-y <- most_var_genes(log2_norm_cpm, ntop=ntop, span=myspan)
+hvg_tbl <- stgeomx::get_hvg_tbl(log2_norm_cpm, loess_span, min_var_quantile)
+hvgenes <- filter(hvg_tbl, rank <= ntop) %>% pull(gene)
 
+#
 # heatmap
-f <- file.path(plot_dir, "heatmap_highvar_genes.pdf")
-p <- heatmap_genes(s, y, f)
+#
+annot_col <- fds$samples %>% 
+  mutate(noise_quantile = ntile(desc(bg_auc), 8)) %>% 
+  column_to_rownames("aoi") %>%
+  select(patient, path_specimen, path_aoi, noise_quantile) %>%
+  as.data.frame()
+y <- log2_norm_cpm[hvgenes, ]
+
+p <- pheatmap(y,
+              scale="row",
+              show_rownames=TRUE,
+              show_colnames=FALSE,
+              border_color=NA,
+              clustering_distance_rows = "euclidean",
+              clustering_distance_cols = "euclidean",
+              clustering_method = "ward.D2",
+              breaks = seq(-3, 3, 0.05),
+              color = colorRampPalette(c("purple3", "black", "yellow2"))(120),
+              annotation_col = annot_col,
+              fontsize=6)
+p
+
 ```
 
 ## PCA
 
 ```{r pca}
-# subset most variable genes
-ntop <- 250
-myspan <- 0.5
-s <- fds$samples
-y <- most_var_genes(log2_norm_cpm, ntop=ntop, span=myspan)
 
-# plot dimensions
-width <- 12
-height <- 10
+# subset most variable genes
+s <- fds$samples
+y <- log2_norm_cpm[hvgenes, ]
 
 # PCA
-npcs <- 50
-pca_res <- prcomp(t(y), center=TRUE, scale.=TRUE, rank.=npcs)
+pca_res <- prcomp(t(y), center=TRUE, scale.=FALSE)
 pca_res.var <- round(100 * pca_res$sdev^2 / sum( pca_res$sdev^2 ), 2)
 pca_res.var_txt <- paste(colnames(pca_res$x), " (", paste(as.character(pca_res.var), "%", ")", sep=""), sep="")
 
@@ -344,75 +266,17 @@ fviz_ntop <- 50
 
 # percent variance of each PC
 p <- fviz_eig(pca_res, col.var="blue", addlabels=TRUE)
-f <- file.path(plot_dir, paste0("pca_fviz_eig.pdf"))
-ggsave(f, p)
-# 
+p
+
 # contributions of variables to each PC
 p <- fviz_contrib(pca_res, choice="var", axes=1, top=fviz_ntop) +
   theme(axis.text.x = element_text(angle=90))
-f <- file.path(plot_dir, paste0("pca_fviz_contrib1.pdf"))
-ggsave(f, p)
+p
 
-# p <- fviz_contrib(pca_res, choice="var", axes=2, top=fviz_ntop) +
-#   theme(axis.text.x = element_text(angle=90))
-# f <- file.path(plot_dir, paste0("pca_fviz_contrib2.pdf"))
-# ggsave(f, p)
-# 
-# p <- fviz_contrib(pca_res, choice="var", axes=3, top=fviz_ntop) +
-#   theme(axis.text.x = element_text(angle=90))
-# f <- file.path(plot_dir, paste0("pca_fviz_contrib3.pdf"))
-# ggsave(f, p)
-# 
-# # contribution to first 3 PCs
-# p <- fviz_contrib(pca_res, choice="var", axes = 1:3, top=fviz_ntop) +
-#   theme(axis.text.x = element_text(angle=90))
-# f <- file.path(plot_dir, paste0("pca_fviz_contrib123.pdf"))
-# ggsave(f, p)
-# 
-# # graph of variables contributing to PCA
-# p <- fviz_pca_var(
-#   pca_res,
-#   axes = c(1,2),
-#   col.var = "contrib", # Color by the quality of representation
-#   gradient.cols = c("darkorchid4", "gold", "darkorange"),
-#   repel=TRUE,
-#   select.var = list(contrib=fviz_ntop)
-# )
-# f <- file.path(plot_dir, paste0("pca_fviz_pca_var_pc12.pdf"))
-# ggsave(f, p, width=7, height=7)
-# 
-# # graph of variables contributing to PCA
-# p <- fviz_pca_var(
-#   pca_res,
-#   axes = c(1,3),
-#   col.var = "contrib", # Color by the quality of representation
-#   gradient.cols = c("darkorchid4", "gold", "darkorange"),
-#   repel=TRUE,
-#   select.var = list(contrib=fviz_ntop)
-# )
-# f <- file.path(plot_dir, paste0("pca_fviz_pca_var_pc13.pdf"))
-# ggsave(f, p, width=7, height=7)
-# 
-# # graph of variables contributing to PCA
-# p <- fviz_pca_var(
-#   pca_res,
-#   axes = c(2,3),
-#   col.var = "contrib", # Color by the quality of representation
-#   gradient.cols = c("darkorchid4", "gold", "darkorange"),
-#   repel=TRUE,
-#   select.var = list(contrib=fviz_ntop)
-# )
-# f <- file.path(plot_dir, paste0("pca_fviz_pca_var_pc23.pdf"))
-# ggsave(f, p, width=7, height=7)
-
-
-
-#
 # PCA plots
-#
 x <- bind_cols(s, as_tibble(pca_res$x))
 
-# bg_ks_dist
+# bg_auc
 p <- ggplot(x, aes(x=PC1, y=PC2, color=bg_auc)) +
   geom_point(alpha = 0.8, size=3) +
   scale_color_viridis_c() +
@@ -420,111 +284,25 @@ p <- ggplot(x, aes(x=PC1, y=PC2, color=bg_auc)) +
   theme(aspect.ratio=1) +
   theme(legend.text = element_text(size=7)) +
   labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
-f <- file.path(plot_dir, paste0("pca_bg_auc.pdf"))
-ggsave(f, plot=p, device="pdf", width=width, height=height)
+p
 
 # patient
 p <- ggplot(x, aes(x=PC1, y=PC2, color=patient)) +
   geom_point(alpha = 0.8, size=3) +
-  # scale_color_manual(values = color_scales$patient) +
   theme_bw() +
   theme(aspect.ratio=1) +
   theme(legend.text = element_text(size=7)) +
   labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
-f <- file.path(plot_dir, paste0("pca_patient.pdf"))
-ggsave(f, plot=p, device="pdf", width=width, height=height)
+p
 
 # subset
 p <- ggplot(x, aes(x=PC1, y=PC2, color=subset)) +
   geom_point(alpha = 0.8, size=3) +
-  # scale_color_manual(values = color_scales$patient) +
   theme_bw() +
   theme(aspect.ratio=1) +
   theme(legend.text = element_text(size=7)) +
   labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
-f <- file.path(plot_dir, paste0("pca_region.pdf"))
-ggsave(f, plot=p, device="pdf", width=width, height=height)
-
-
-#
-# Plots of PC1, PC2, and PC3
-#
-pca_plot <- function(x, xvar, yvar, color_by, shape_by) {
-  color_by_string <- rlang::as_string(rlang::ensym(color_by))
-  shape_by_string <- rlang::as_string(rlang::ensym(shape_by))
-  
-  # if (is.character(pull(x, {{color_by}}))) {
-  #   scale_color_func <- scale_color_manual(values = color_scales[[color_by_string]])
-  # } else {
-  #   scale_color_func <- scale_color_viridis_c()
-  # }
-
-  p <- ggplot(x, aes(x={{xvar}}, y={{yvar}}, color={{color_by}}, shape={{shape_by}})) +
-    geom_point(alpha = 0.8, size=3) +
-    #scale_color_func +
-    #scale_color_manual(values = color_scales[[color_by_string]]) +
-    #scale_shape_manual(values = shape_scales[[shape_by_string]]) +
-    theme_bw() +
-    theme(aspect.ratio=1,
-          legend.text = element_text(size=7))
-    # coord_fixed() +
-  return(p)
-}
-
-
-# bg_auc
-p12 <- pca_plot(x, PC1, PC2, bg_auc)
-p13 <- pca_plot(x, PC1, PC3, bg_auc)
-p23 <- pca_plot(x, PC2, PC3, bg_auc)
-p <- p12 + p13 + p23 + 
-  plot_layout(guides = "collect")
-f <- file.path(plot_dir, paste0("pca_bg_auc_pc123.pdf"))
-ggsave(f, plot=p, device="pdf", width=12, height=6)
-
-# subset
-p12 <- pca_plot(x, PC1, PC2, subset)
-p13 <- pca_plot(x, PC1, PC3, subset)
-p23 <- pca_plot(x, PC2, PC3, subset)
-p <- p12 + p13 + p23 + 
-  plot_layout(guides = "collect")
-f <- file.path(plot_dir, paste0("pca_region_pc123.pdf"))
-ggsave(f, plot=p, device="pdf", width=12, height=6)
-
-# patient
-p12 <- pca_plot(x, PC1, PC2, patient)
-p13 <- pca_plot(x, PC1, PC3, patient)
-p23 <- pca_plot(x, PC2, PC3, patient)
-p <- p12 + p13 + p23 + 
-  plot_layout(guides = "collect")
-f <- file.path(plot_dir, paste0("pca_patient_pc123.pdf"))
-ggsave(f, plot=p, device="pdf", width=12, height=6)
-
-# path_subtype
-p12 <- pca_plot(x, PC1, PC2, path_subtype)
-p13 <- pca_plot(x, PC1, PC3, path_subtype)
-p23 <- pca_plot(x, PC2, PC3, path_subtype)
-p <- p12 + p13 + p23 + 
-  plot_layout(guides = "collect")
-f <- file.path(plot_dir, paste0("pca_path_subtype_pc123.pdf"))
-ggsave(f, plot=p, device="pdf", width=12, height=6)
-
-# path_specimen
-p12 <- pca_plot(x, PC1, PC2, path_specimen)
-p13 <- pca_plot(x, PC1, PC3, path_specimen)
-p23 <- pca_plot(x, PC2, PC3, path_specimen)
-p <- p12 + p13 + p23 + 
-  plot_layout(guides = "collect")
-f <- file.path(plot_dir, paste0("pca_path_specimen_pc123.pdf"))
-ggsave(f, plot=p, device="pdf", width=12, height=6)
-
-# path_aoi
-p12 <- pca_plot(x, PC1, PC2, path_aoi)
-p13 <- pca_plot(x, PC1, PC3, path_aoi)
-p23 <- pca_plot(x, PC2, PC3, path_aoi)
-p <- p12 + p13 + p23 + 
-  plot_layout(guides = "collect")
-f <- file.path(plot_dir, paste0("pca_path_aoi_pc123.pdf"))
-ggsave(f, plot=p, device="pdf", width=12, height=6)
+p
 
 ```
 
