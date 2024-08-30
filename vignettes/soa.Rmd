@@ -202,7 +202,7 @@ log2_norm_cpm <- log2(fds$x + 1)
 
 ## Highly variable genes (updated)
 
-```{r highly variable genes, include=FALSE}
+```{r highly variable genes}
 
 y <- log2_norm_cpm
 ntop <- 250
@@ -221,6 +221,14 @@ p
 # select most variable genes
 hvg_tbl <- stgeomx::get_hvg_tbl(log2_norm_cpm, loess_span, min_var_quantile)
 hvgenes <- filter(hvg_tbl, rank <= ntop) %>% pull(gene)
+
+
+```
+
+
+## Heatmap of HVGs
+
+```{r heatmap hvgs}
 
 #
 # heatmap
