@@ -42,6 +42,11 @@ prepare_input <- function(samples, counts,
   # ensure samples and count tables are aligned
   stopifnot(all(pull(samples, {{ aoi_key_col }}) == colnames(counts)))
 
+  # if count is NA or blank, set to 0
+  counts <- counts %>%
+    replace(is.na(.), 0) %>%
+    replace(. == "", 0)
+
   # ensure no duplicate probes
   if (sum(duplicated(meta$probe)) > 0) {
     stop("duplicate probe found")
@@ -117,11 +122,6 @@ read_tsv <- function(sample_tsv_file,
   valid_cols <- col_names != ""
   counts <- counts[, valid_cols]
 
-  # Madison edit: if count is blank, set to 0
-  counts <- counts %>%
-    mutate_all(~replace(., is.na(.), 0)) %>%
-    mutate_all(~ifelse(. == "", 0, .))
-
   # prepare dataset
   ds <- prepare_input(samples, counts, slide_key_col, roi_key_col,
                       segment_key_col, aoi_key_col, probe_key_col,
@@ -171,11 +171,6 @@ read_xlsx <- function(xlsx_file,
   # read counts
   counts <- readxl::read_excel(xlsx_file, sheet=count_sheet,
                                .name_repair = "minimal")
-
-  # Madison edit: if count is blank, set to 0
-  counts <- counts %>%
-    mutate_all(~replace(., is.na(.), 0)) %>%
-    mutate_all(~ifelse(. == "", 0, .))
 
   # prepare dataset
   ds <- prepare_input(samples, counts, slide_key_col, roi_key_col,
@@ -241,7 +236,7 @@ read_dcc <- function(dcc_tar_file, dcc_dir) {
     tidyr::hoist("Scan_Attributes", SampleID="SampleID") %>%
     dplyr::select(-"Scan_Attributes") %>%
     tidyr::unnest("Code_Summary") %>%
-    tidyr::pivot_wider(names_from="SampleID", values_from="Count", values_fill=1)
+    tidyr::pivot_wider(names_from="SampleID", values_from="Count", values_fill=0)
 
   # cleanup
   if (file.exists(dcc_dir)) {
