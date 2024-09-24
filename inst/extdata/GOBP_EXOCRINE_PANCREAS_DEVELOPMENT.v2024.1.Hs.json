@@ -1,0 +1,3 @@
+{
+  "GOBP_EXOCRINE_PANCREAS_DEVELOPMENT" : {"systematicName":"M22994","pmid":"","exactSource":"GO:0031017","geneSymbols":["CELA1","IGF2","INSR","PDX1","PTF1A","SRP54","WLS"],"msigdbURL":"https://www.gsea-msigdb.org/gsea/msigdb/human/geneset/GOBP_EXOCRINE_PANCREAS_DEVELOPMENT","externalDetailsURL":["http://amigo.geneontology.org/amigo/term/GO:0031017"],"filteredBySimilarity":[],"externalNamesForSimilarTerms":[],"collection":"C5:GO:BP"}
+}

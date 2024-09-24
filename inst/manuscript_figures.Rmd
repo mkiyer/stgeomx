@@ -40,28 +40,6 @@ add_study_field <- function(ds, study) {
   return(list(samples = s, meta = ds$meta, counts = ds$counts))
 }
 
-# merge_ds <- function(a, b) {
-#   # merge sample tables
-#   sample_cols <- intersect(colnames(a$samples), colnames(b$samples))
-#   s <- bind_rows(select(a$samples, all_of(sample_cols)),
-#                  select(b$samples, all_of(sample_cols)))
-#   
-#   # merge count data
-#   a_counts <- bind_cols(select(a$meta, probe, gene, bg), a$counts)
-#   b_counts <- bind_cols(select(b$meta, probe, gene, bg), b$counts)
-#   # Madison edit: added suffix to avoid addition of ".y" to the end of column names
-#   counts <- inner_join(a_counts, b_counts, by=c("probe", "gene", "bg"), suffix = c("", ""),
-#                        relationship="one-to-one")
-# 
-#   # break into metadata and count data
-#   meta <- select(counts, -all_of(s$aoi))
-#   counts <- select(counts, all_of(s$aoi))
-# 
-#   # make new dataset object
-#   ds <- stgeomx::init(samples=s, meta=meta, counts=counts, x=counts)
-#   return(ds)
-# }
-
 save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
   stopifnot(!missing(x))
   stopifnot(!missing(filename))
@@ -202,10 +180,10 @@ ds_colon <- add_study_field(ds_colon, "colon")
 ds_brain <- add_study_field(ds_brain, "brain")
 
 # merge datasets (all annotated data)
-ds <- stgeomx::merge_ds(ds, ds_ln)
-ds <- stgeomx::merge_ds(ds, ds_colon)
-ds <- stgeomx::merge_ds(ds, ds_brain)
-ds <- stgeomx::merge_ds(ds, ds_kidney)
+ds <- stgeomx::merge(ds, ds_ln)
+ds <- stgeomx::merge(ds, ds_colon)
+ds <- stgeomx::merge(ds, ds_brain)
+ds <- stgeomx::merge(ds, ds_kidney)
 
 # process dataset
 ds_panc <- stgeomx::preprocess(ds_panc, geomx_negprobe_lod_quantile)
@@ -290,7 +268,7 @@ ggsave(paste0(f, ".pdf"), p, width=w, height=h)
 
 ## QC Figures: AOI filtering, results stratified by different parameters
 ```{r qc filter aoi, stratification}
-ds_func <- ds_kidney
+ds_func <- ds_brain
 
 width <- 12
 height <- 8
@@ -561,7 +539,7 @@ ggsave(paste0(f, ".png"), p, width=w, height=h)
 ggsave(paste0(f, ".pdf"), p, width=w, height=h)
 
 # plot background correction (before and after)
-p <- stgeomx::plot_bgcorrect2(fds)
+p <- stgeomx::plot_bgcorrect(fds)
 p
 w <- 8
 h <- 8
@@ -604,7 +582,7 @@ ggsave(paste0(f, ".png"), p, width=w, height=h)
 ggsave(paste0(f, ".pdf"), p, width=w, height=h)
 
 # plot background correction (before and after)
-p <- stgeomx::plot_bgcorrect2(fds_panc)
+p <- stgeomx::plot_bgcorrect(fds_panc)
 p
 w <- 8
 h <- 8
@@ -647,7 +625,7 @@ ggsave(paste0(f, ".png"), p, width=w, height=h)
 ggsave(paste0(f, ".pdf"), p, width=w, height=h)
 
 # plot background correction (before and after)
-p <- stgeomx::plot_bgcorrect2(fds_ln)
+p <- stgeomx::plot_bgcorrect(fds_ln)
 p
 w <- 8
 h <- 8
@@ -690,7 +668,7 @@ ggsave(paste0(f, ".png"), p, width=w, height=h)
 ggsave(paste0(f, ".pdf"), p, width=w, height=h)
 
 # plot background correction (before and after)
-p <- stgeomx::plot_bgcorrect2(fds_kidney)
+p <- stgeomx::plot_bgcorrect(fds_kidney)
 p
 w <- 8
 h <- 8
@@ -733,7 +711,7 @@ ggsave(paste0(f, ".png"), p, width=w, height=h)
 ggsave(paste0(f, ".pdf"), p, width=w, height=h)
 
 # plot background correction (before and after)
-p <- stgeomx::plot_bgcorrect2(fds_colon)
+p <- stgeomx::plot_bgcorrect(fds_colon)
 p
 w <- 8
 h <- 8
@@ -776,7 +754,7 @@ ggsave(paste0(f, ".png"), p, width=w, height=h)
 ggsave(paste0(f, ".pdf"), p, width=w, height=h)
 
 # plot background correction (before and after)
-p <- stgeomx::plot_bgcorrect2(fds_brain)
+p <- stgeomx::plot_bgcorrect(fds_brain)
 p
 w <- 8
 h <- 8
@@ -868,7 +846,7 @@ most_var_genes <- function(x, ntop=500, span=0.50) {
 pca <- function(s, y) {
   # PCA
   pca_res <- prcomp(t(y), center=TRUE, scale.=FALSE)
-  pca_res.var <- round(100 * pca_res$sdev^2 / sum( pca_res$sdev^2 ), 2)
+  pca_res.var <- round(100 * pca_res$sdev^2 / sum(pca_res$sdev^2 ), 2)
   pca_res$var_txt <- paste(colnames(pca_res$x), " (", paste(as.character(pca_res.var), "%", ")", sep=""), sep="")
 
   return(pca_res)
@@ -936,6 +914,7 @@ pca_plot_ipmn <- function(fds, pca_res, xvar, yvar, color_by, shape_by) {
 
 ## FIGURE 2: effects of bg correction and normalization on merged only
 ```{r bg correction and normalization methods plot}
+library("patchwork")
 correction_normalization_dir <- file.path(plot_dir, "bgcorrection_normalization")
 
 # background correction must use original unfiltered matrix
@@ -966,20 +945,20 @@ fds_none_q3 <- stgeomx::normalize(fds_none, "q3")
 fds_none_tmm <- stgeomx::normalize(fds_none, "tmm")
 
 # plot background correction
-plot_bgsub_qn <- plot_bgcorrect_helper(fds_bgsub_qn)
-plot_bgsub_rle <- plot_bgcorrect_helper(fds_bgsub_rle)
-plot_bgsub_q3 <- plot_bgcorrect_helper(fds_bgsub_q3)
-plot_bgsub_tmm <- plot_bgcorrect_helper(fds_bgsub_tmm)
+plot_bgsub_qn <- stgeomx::plot_bgcorrect(fds_bgsub_qn)
+plot_bgsub_rle <- stgeomx::plot_bgcorrect(fds_bgsub_rle)
+plot_bgsub_q3 <- stgeomx::plot_bgcorrect(fds_bgsub_q3)
+plot_bgsub_tmm <- stgeomx::plot_bgcorrect(fds_bgsub_tmm)
 
-plot_qq_qn <- plot_bgcorrect_helper(fds_qq_qn)
-plot_qq_rle <- plot_bgcorrect_helper(fds_qq_rle)
-plot_qq_q3 <- plot_bgcorrect_helper(fds_qq_q3)
-plot_qq_tmm <- plot_bgcorrect_helper(fds_qq_tmm)
+plot_qq_qn <- stgeomx::plot_bgcorrect(fds_qq_qn)
+plot_qq_rle <- stgeomx::plot_bgcorrect(fds_qq_rle)
+plot_qq_q3 <- stgeomx::plot_bgcorrect(fds_qq_q3)
+plot_qq_tmm <- stgeomx::plot_bgcorrect(fds_qq_tmm)
 
-plot_none_qn <- plot_bgcorrect_helper(fds_none_qn)
-plot_none_rle <- plot_bgcorrect_helper(fds_none_rle)
-plot_none_q3 <- plot_bgcorrect_helper(fds_none_q3)
-plot_none_tmm <- plot_bgcorrect_helper(fds_none_tmm)
+plot_none_qn <- stgeomx::plot_bgcorrect(fds_none_qn)
+plot_none_rle <- stgeomx::plot_bgcorrect(fds_none_rle)
+plot_none_q3 <- stgeomx::plot_bgcorrect(fds_none_q3)
+plot_none_tmm <- stgeomx::plot_bgcorrect(fds_none_tmm)
 
 # Column and row titles
 col_titles <- list(
@@ -1021,8 +1000,8 @@ p <- p +
   )
 
 f <- file.path(correction_normalization_dir, "bgcorrect_normalization_grid")
-ggsave(paste0(f, ".png"), p, width=20, height=15)
-ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+ggsave(paste0(f, ".png"), p, width=30, height=15)
+ggsave(paste0(f, ".pdf"), p, width=30, height=15)
 ```
 
 ## Setup for downstream analysis
@@ -1624,8 +1603,46 @@ fds_qq_qn$samples <- fds_qq_qn$samples %>% mutate(
 x <- bind_cols(fds_qq_qn$samples, as_tibble(pca_res_qq_qn$x))
 ```
 
+
+### Cluster purity
+```{r purity}
+library("IntNMF")
+
+# List of methods
+methods <- list(fds_none_q3, fds_none_tmm, fds_none_rle, fds_none_qn, 
+                fds_bgsub_q3, fds_bgsub_tmm, fds_bgsub_rle, fds_bgsub_qn, 
+                fds_qq_q3, fds_qq_tmm, fds_qq_rle, fds_qq_qn)
+
+# Initialize vectors to store Chi-squared statistics and p-values
+purity_table <- numeric(length(methods))
+method_names <- c("none_q3", "none_tmm", "none_rle", "none_qn",
+                   "bgsub_q3", "bgsub_tmm", "bgsub_rle", "bgsub_qn",
+                   "qq_q3", "qq_tmm", "qq_rle", "qq_qn")
+purity_table <- NULL
+
+# Loop through each method
+for (i in methods) {
+
+  # create purity score and add to purity table
+  purity_table <- rbind(purity_table, ClusterPurity(i$samples$study, i$samples$cluster_name))
+}
+
+# Combine results into a data frame
+results_df <- data.frame(
+  Method = method_names,
+  Purity_Scores = purity_table
+ )
+
+# Print the results
+print(results_df)
+
+
+```
+
 ### Chi-squared analysis of clusters
 ``` {r}
+library(reshape2)
+
 # List of methods
 methods <- list(fds_none_q3, fds_none_tmm, fds_none_rle, fds_none_qn, 
                 fds_bgsub_q3, fds_bgsub_tmm, fds_bgsub_rle, fds_bgsub_qn, 
@@ -1636,14 +1653,25 @@ chi_squared_stats <- numeric(length(methods))
 method_names <- c("none_q3", "none_tmm", "none_rle", "none_qn",
                    "bgsub_q3", "bgsub_tmm", "bgsub_rle", "bgsub_qn",
                    "qq_q3", "qq_tmm", "qq_rle", "qq_qn")
+master_contingency_table <- NULL
 
 # Loop through each method
 for (i in seq_along(methods)) {
   # Create the contingency table
   contingency_table <- table(methods[[i]]$samples$study, methods[[i]]$samples$cluster_name)
+  colnames(contingency_table) <- paste0(colnames(contingency_table), "_", method_names[i])
+
   
   # Print the contingency table
   print(contingency_table)
+  
+  # add to master contingency table
+  if (i == 1) {
+    master_contingency_table <- contingency_table
+  }
+  else {
+    master_contingency_table <- cbind(master_contingency_table, contingency_table)
+  }
   
   # Perform the Chi-squared test
   chi_squared_result <- chisq.test(contingency_table)
@@ -1652,9 +1680,6 @@ for (i in seq_along(methods)) {
   # Store the Chi-squared statistic and p-value
   chi_squared_stats[i] <- chi_squared_result$statistic
 }
-
-# Format p-values to scientific notation
-p_values_formatted <- format(p_values, scientific = TRUE)
 
 # Combine results into a data frame
 results_df <- data.frame(
@@ -1665,12 +1690,29 @@ results_df <- data.frame(
 # Print the results
 print(results_df)
 
+print(master_contingency_table)
+# heatmap(master_contingency_table)
+
+# # Dummy data
+# x <- LETTERS[1:20]
+# y <- paste0("var", seq(1,20))
+# data <- expand.grid(X=x, Y=y)
+# data$Z <- runif(400, 0, 5)
+ 
+# # Heatmap 
+# master_contingency_table <- melt(master_contingency_table)
+# ggplot(master_contingency_table, aes(x = Var1, y = Var2, fill = value)) +
+# geom_tile()
+
 ```
 
 # FIGURE 5: DE
 ## DE analysis
 
 ```{r}
+library("limma")
+library("writexl")
+
 de_setup <- function(method_name, de_padj_cutoff=0.05, de_log2fc_cutoff=1) {
   # access fds and log2_norm_cpm
   fds_name <- paste0("fds_", method_name)
@@ -1702,7 +1744,8 @@ de_setup <- function(method_name, de_padj_cutoff=0.05, de_log2fc_cutoff=1) {
   # write cluster results
   file_name <- paste0("de_clusters_", method_name, ".xlsx")
   write_xlsx(res, file.path(results_dir, file_name))
-  return(res)
+  de <- bind_rows(de, res)
+  return(de)
 }
 
 run_limma_trend <- function(y, design, contrasts, padj_cutoff, log2fc_cutoff) {
@@ -1730,23 +1773,23 @@ run_limma_trend <- function(y, design, contrasts, padj_cutoff, log2fc_cutoff) {
   return(x)
 }
 
-# res_none_q3 <- de_setup("none_q3")
-# res_none_tmm <- de_setup("none_tmm")
-# res_none_rle <- de_setup("none_rle")
-# res_none_qn <- de_setup("none_qn")
-# 
-# res_bgsub_q3 <- de_setup("bgsub_q3")
-# res_bgsub_tmm <- de_setup("bgsub_tmm")
-# res_bgsub_rle <- de_setup("bgsub_rle")
-# res_bgsub_qn <- de_setup("bgsub_qn")
-# 
-# res_qq_q3 <- de_setup("qq_q3")
-# res_qq_tmm <- de_setup("qq_tmm")
-# res_qq_rle <- de_setup("qq_rle")
-# res_qq_qn <- de_setup("qq_qn")
+de_none_q3 <- de_setup("none_q3")
+de_none_tmm <- de_setup("none_tmm")
+de_none_rle <- de_setup("none_rle")
+de_none_qn <- de_setup("none_qn")
+
+de_bgsub_q3 <- de_setup("bgsub_q3")
+de_bgsub_tmm <- de_setup("bgsub_tmm")
+de_bgsub_rle <- de_setup("bgsub_rle")
+de_bgsub_qn <- de_setup("bgsub_qn")
+
+de_qq_q3 <- de_setup("qq_q3")
+de_qq_tmm <- de_setup("qq_tmm")
+de_qq_rle <- de_setup("qq_rle")
+de_qq_qn <- de_setup("qq_qn")
 
 # write tables
-# table(res_none_q3$contrast, res_none_q3$de)
+table(de_none_q3$contrast, de_none_q3$de)
 
 ```
 
@@ -1755,7 +1798,7 @@ run_limma_trend <- function(y, design, contrasts, padj_cutoff, log2fc_cutoff) {
 ```{r de volcano plots}
 
 de <- NULL
-de <- bind_rows(de, res_qq_qn)
+de <- de_qq_qn
 
 plot_de_volcano <- function(res, nlabel=50) {
   # label the top n up/down genes
@@ -2006,377 +2049,563 @@ ggsave(paste0(f, ".png"), plot=p, width=8, height=8)
 
 ## FIGURE 6: GSEA
 ``` {r gsea}
-# read msigdb data
-f <- file.path(data_dir, "msigdb.v2023.2.Hs.json")
+gsea_nperms <- 10000
+
+read_msigdb_json_file <- function(filename) {
+  x <- jsonlite::fromJSON(filename)
+  y <- tibble(gs_name = names(x), gs = x) %>% 
+    unnest_wider(gs) %>%
+    unnest_longer(geneSymbols) %>%
+    select(gs_cat = collection,
+           gs_name = gs_name,
+           gene_symbol = geneSymbols)
+}
+
+# read msigdb data: hallmark
+f <- system.file("extdata", "h.all.v2024.1.Hs.json", package = "stgeomx")
 msigdb_gene_sets <- read_msigdb_json_file(f)
 # determine gene universe
-msigdb_genes <- intersect(fds$meta$gene, msigdb_gene_sets$gene_symbol)
+msigdb_genes <- intersect(fds_qq_qn$meta$gene, msigdb_gene_sets$gene_symbol)
 # filter genes not in our dataset
 msigdb_gene_sets <- msigdb_gene_sets %>%
-  dplyr::filter(gene_symbol %in% fds$meta$gene) %>%
+  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
   distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
-
 # gene set categories
 gs_hallmark <- dplyr::filter(msigdb_gene_sets, gs_cat == "H")
 gs_hallmark <- split(x = gs_hallmark$gene_symbol, f = gs_hallmark$gs_name)
 
-# pass log fold change into gsea with hallmark gene sets (sending new code)
+# read msigdb data: pancreas_endocrine
+f <- system.file("extdata", "GOBP_ENDOCRINE_PANCREAS_DEVELOPMENT.v2024.1.Hs.json", package = "stgeomx")
+gobp_end_pancreas_gene_sets <- read_msigdb_json_file(f)
+# determine gene universe
+gobp_end_pancreas_genes <- intersect(fds_qq_qn$meta$gene, gobp_end_pancreas_gene_sets$gene_symbol)
+# filter genes not in our dataset
+gobp_end_pancreas_gene_sets <- gobp_end_pancreas_gene_sets %>%
+  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# gene set categories
+gs_end_panc <- dplyr::filter(gobp_end_pancreas_gene_sets, gs_cat == "C5:GO:BP")
+gs_end_panc <- split(x = gs_end_panc$gene_symbol, f = gs_end_panc$gs_name)
 
-get_de_ranks <- function(xde, mycontrast) {
-  ranks <- xde %>% 
+# read msigdb data: pancreas secretion
+f <- system.file("extdata", "GOBP_INSULIN_SECRETION.v2024.1.Hs.json", package = "stgeomx")
+gobp_pancreas_secretion_gene_sets <- read_msigdb_json_file(f)
+# determine gene universe
+gobp_pancreas_secretion_genes <- intersect(fds_qq_qn$meta$gene, gobp_pancreas_secretion_gene_sets$gene_symbol)
+# filter genes not in our dataset
+gobp_pancreas_secretion_gene_sets <- gobp_pancreas_secretion_gene_sets %>%
+  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# gene set categories
+gs_panc_sec <- dplyr::filter(gobp_pancreas_secretion_gene_sets, gs_cat == "C5:GO:BP")
+gs_panc_sec <- split(x = gs_panc_sec$gene_symbol, f = gs_panc_sec$gs_name)
+
+# read msigdb data: brain development gene sets
+f <- system.file("extdata", "brain_genesets.v2024.1.Hs.json", package = "stgeomx")
+gobp_brain_gene_sets <- read_msigdb_json_file(f)
+# determine gene universe
+gobp_brain_genes <- intersect(fds_qq_qn$meta$gene, gobp_brain_gene_sets$gene_symbol)
+# filter genes not in our dataset
+gobp_brain_gene_sets <- gobp_brain_gene_sets %>%
+  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# gene set categories
+gs_brain <- dplyr::filter(gobp_brain_gene_sets, gs_cat == "C5:GO:BP")
+gs_brain <- split(x = gs_brain$gene_symbol, f = gs_brain$gs_name)
+
+# read msigdb data: ln development gene sets
+f <- system.file("extdata", "ln_genesets.v2024.1.Hs.json", package = "stgeomx")
+gobp_ln_gene_sets <- read_msigdb_json_file(f)
+# determine gene universe
+gobp_ln_genes <- intersect(fds_qq_qn$meta$gene, gobp_ln_gene_sets$gene_symbol)
+# filter genes not in our dataset
+gobp_ln_gene_sets <- gobp_ln_gene_sets %>%
+  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# gene set categories
+gs_ln <- dplyr::filter(gobp_ln_gene_sets, gs_cat == "C5:GO:BP")
+gs_ln <- split(x = gs_ln$gene_symbol, f = gs_ln$gs_name)
+
+# read msigdb data: kidney development gene sets
+f <- system.file("extdata", "kidney_genesets.v2024.1.Hs.json", package = "stgeomx")
+gobp_kidney_gene_sets <- read_msigdb_json_file(f)
+# determine gene universe
+gobp_kidney_genes <- intersect(fds_qq_qn$meta$gene, gobp_kidney_gene_sets$gene_symbol)
+# filter genes not in our dataset
+gobp_kidney_gene_sets <- gobp_kidney_gene_sets %>%
+  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# gene set categories
+gs_kidney <- dplyr::filter(gobp_kidney_gene_sets, gs_cat == "C5:GO:BP")
+gs_kidney <- split(x = gs_kidney$gene_symbol, f = gs_kidney$gs_name)
+
+# read msigdb data: colon development gene sets
+f <- system.file("extdata", "colon_genesets.v2024.1.Hs.json", package = "stgeomx")
+gobp_colon_gene_sets <- read_msigdb_json_file(f)
+# determine gene universe
+gobp_colon_genes <- intersect(fds_qq_qn$meta$gene, gobp_colon_gene_sets$gene_symbol)
+# filter genes not in our dataset
+gobp_colon_gene_sets <- gobp_colon_gene_sets %>%
+  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# gene set categories
+gs_colon <- dplyr::filter(gobp_colon_gene_sets, gs_cat == "C5:GO:BP")
+gs_colon <- split(x = gs_colon$gene_symbol, f = gs_colon$gs_name)
+
+# new gsea code
+get_fgsea_ranks_de <- function(xde, mycontrast) {
+  ranks <- xde %>%
     dplyr::filter(contrast == mycontrast) %>%
     select(gene, log2fc, padj) %>%
     mutate(rank = log2fc)
   ranks = sort(setNames(ranks$rank, ranks$gene), decreasing = TRUE)
   return(ranks)
 }
-
-plot_gsea_enrichment <- function(x, ranks, a, gs) {
-  txt_stat <- paste0("ES=", round(x$ES,2), " NES=", round(x$NES, 2), " padj=", format(x$padj, scientific=TRUE, digits=3))
-  txt_title <- paste0("ranks: ", a, " gs: ", x$pathway)
-  p <- plotEnrichment(gs[[x$pathway]], ranks) +
-    annotate(geom="text", x=150, y=0.1, label=txt_stat, hjust=0) +
-    labs(title = txt_title, 
-         xlab = "Rank",
-         ylab = "Enrichment Score") +
-    theme(plot.title = element_text(size=8))
-  return(p)
+ 
+ 
+fgsea_run_batch <- function(xde, xgs,
+                            fgsea_eps=0,
+                            fgsea_nperms=1000) {
+  gsea <- NULL
+  for (xcontrast in unique(xde$contrast)) {
+    ranks <- get_fgsea_ranks_de(xde, xcontrast)
+    res <- fgsea(pathways=xgs,
+                 stats=ranks,
+                 eps=fgsea_eps,
+                 nPermSimple=fgsea_nperms)
+    res <- mutate(res, contrast = xcontrast)
+    gsea <- bind_rows(gsea, res)     
+  }
+  return(gsea)
 }
 
-# fgsea_run_batch <- function(xde, xgs, 
-#                             fgsea_eps=0,
-#                             fgsea_nperms=10000, 
-#                             fgsea_nproc=0) {
-#   fgsea_scoretypes <- c("pos", "neg")
-#   gsea <- NULL
-#   for (xcontrast in unique(xde$contrast)) {
-#     ranks <- get_de_ranks(xde, xcontrast)
-#     for (fgsea_scoretype in fgsea_scoretypes) {
-      res <- fgsea(pathways=xgs, 
-                   stats=ranks, 
-                   eps=fgsea_eps, 
-                   scoreType = fgsea_scoretype,
-                   nPermSimple=fgsea_nperms, 
-                   nproc=fgsea_nproc)
-      res <- mutate(res, 
-                    contrast = xcontrast, 
-                    dir = fgsea_scoretype)
-      gsea <- bind_rows(gsea, res)      
-#     }
-#   }
-#   return(gsea)
-# }
-
-
-#
-# Run full analysis
-#
-gsea <- NULL
-
-# hallmark
-res <- fgsea_run_batch(de, gs_hallmark, 
-                       fgsea_eps=0, fgsea_nperms=gsea_nperms, fgsea_nproc=10)
-gsea <- bind_rows(gsea, res)
-gsea_all <- gsea
-```
-
-
-# Downstream data analysis 
-## Highly variable genes: updated
-```{r updated highly variable genes, include=FALSE}
-most_var_genes <- function(x, ntop=500, span=0.50) {
-  tbl <- bind_cols(
-    u = rowMeans(x),
-    v = apply(x, 1, function(x) var(x))
-  )
-  lovar <- loess(v ~ u, data=tbl, span=span)
-  tbl$lovar <- predict(lovar)
-  tbl$vadj <- tbl$v - tbl$lovar
-  keep <- order(tbl$vadj, decreasing=TRUE)[seq_len(min(ntop, nrow(tbl)))]
-  return(x[keep,])
-}
-
-maplot <- function(y, ntop=1000, nlabel=100, myspan=0.5) {
-  tbl <- bind_cols(
-    g = rownames(y),
-    u = rowMeans(y),
-    v = apply(y, 1, function(x) var(x))
-  )
-  lovar <- loess(v ~ u, data=tbl, span=myspan)
-  tbl$lovar <- predict(lovar)
-  tbl$vadj <- tbl$v - tbl$lovar
-  tbl <- tbl %>% 
-    mutate(rank = min_rank(-vadj)) %>%
-    arrange(rank)
-  label_data <- filter(tbl, rank <= nlabel)
-  top_data <- filter(tbl, rank < ntop)
-  bot_data <- filter(tbl, rank >= ntop)
-  p <- ggplot(tbl) +
-    geom_point(data=bot_data, aes(u, v), alpha=0.5, size=1, color="#aaaaaa") +
-    geom_point(data=top_data, aes(u, v), alpha=0.8, size=2, color="#ffaaaa") +
-    geom_line(aes(u, lovar), color="blue") +
-    geom_text_repel(data=label_data, aes(u, v, label=g), color="black", size=3, max.overlaps=Inf) +
-    theme_minimal()
-  return(p)
-}
-
-heatmap_genes <- function(s, x, filename="heatmap.pdf", width=10, height=10) {
-  s <- s %>% mutate(
-    noise_quantile = ntile(desc(bg_auc), 8)
-  )
-  annot_col <- column_to_rownames(s, "aoi") %>%
-    select(patient, path_specimen, path_aoi, noise_quantile) %>%
-    as.data.frame()
-  p <- pheatmap(x,
-                scale="row",
-                show_rownames=TRUE,
-                show_colnames=FALSE,
-                border_color=NA,
-                clustering_distance_rows = "euclidean",
-                clustering_distance_cols = "euclidean",
-                clustering_method = "ward.D2",
-                # clustering_method = "average",
-                # clustering_distance_rows = "correlation",
-                # clustering_distance_cols = "correlation",
-                breaks = seq(-3, 3, 0.05),
-                color = colorRampPalette(c("purple3", "black", "yellow2"))(120),
-                annotation_col = annot_col,
-                # annotation_colors = color_scales,
-                fontsize=4,
-                filename=filename,
-                width=width,
-                height=height)
-  return(p)
-}
-
-y <- log2_norm_cpm_merged
-ntop <- 1000
-nlabel <- 100
-myspan <- 0.5
-
-# maplot
-p <- maplot(log2_norm_cpm_merged, ntop=ntop, nlabel=nlabel, myspan=myspan)
-f <- file.path(plot_dir, paste0("maplot"))
-ggsave(paste0(f, ".pdf"), plot=p, width=10, height=10)
-ggsave(paste0(f, ".png"), plot=p, width=10, height=10)
-
-# select most variable genes
-ntop <- 500
-myspan <- 0.5
-s <- fds$samples
-y <- most_var_genes(log2_norm_cpm_merged, ntop=ntop, span=myspan)
-
-# heatmap
-f <- file.path(plot_dir, "heatmap_highvar_genes.pdf")
-p <- heatmap_genes(s, y, f)
-```
-
-## PCA: updated
-```{r updated pca}
-# subset most variable genes
-ntop <- 250
-myspan <- 0.5
-s <- fds$samples
-y <- most_var_genes(log2_norm_cpm_merged, ntop=ntop, span=myspan)
-
-# plot dimensions
-width <- 12
-height <- 10
-
-# PCA
-npcs <- 50
-pca_res <- prcomp(t(y), center=TRUE, scale.=TRUE, rank.=npcs)
-pca_res.var <- round(100 * pca_res$sdev^2 / sum( pca_res$sdev^2 ), 2)
-pca_res.var_txt <- paste(colnames(pca_res$x), " (", paste(as.character(pca_res.var), "%", ")", sep=""), sep="")
-
-# fviz plots
-fviz_ntop <- 50
-
-# percent variance of each PC
-p <- fviz_eig(pca_res, col.var="blue", addlabels=TRUE)
-f <- file.path(plot_dir, paste0("pca_fviz_eig.pdf"))
-ggsave(f, p)
-
-# contributions of variables to each PC
-p <- fviz_contrib(pca_res, choice="var", axes=1, top=fviz_ntop) +
-  theme(axis.text.x = element_text(angle=90))
-f <- file.path(plot_dir, paste0("pca_fviz_contrib1.pdf"))
-ggsave(f, p)
-
-p <- fviz_contrib(pca_res, choice="var", axes=2, top=fviz_ntop) +
-  theme(axis.text.x = element_text(angle=90))
-f <- file.path(plot_dir, paste0("pca_fviz_contrib2.pdf"))
-ggsave(f, p)
-
-p <- fviz_contrib(pca_res, choice="var", axes=3, top=fviz_ntop) +
-  theme(axis.text.x = element_text(angle=90))
-f <- file.path(plot_dir, paste0("pca_fviz_contrib3.pdf"))
-ggsave(f, p)
-
-# contribution to first 3 PCs
-p <- fviz_contrib(pca_res, choice="var", axes = 1:3, top=fviz_ntop) +
-  theme(axis.text.x = element_text(angle=90))
-f <- file.path(plot_dir, paste0("pca_fviz_contrib123.pdf"))
-ggsave(f, p)
-
-# graph of variables contributing to PCA
-p <- fviz_pca_var(
-  pca_res,
-  axes = c(1,2),
-  col.var = "contrib", # Color by the quality of representation
-  gradient.cols = c("darkorchid4", "gold", "darkorange"),
-  repel=TRUE,
-  select.var = list(contrib=fviz_ntop)
-)
-f <- file.path(plot_dir, paste0("pca_fviz_pca_var_pc12.pdf"))
-ggsave(f, p, width=7, height=7)
-
-# graph of variables contributing to PCA
-p <- fviz_pca_var(
-  pca_res,
-  axes = c(1,3),
-  col.var = "contrib", # Color by the quality of representation
-  gradient.cols = c("darkorchid4", "gold", "darkorange"),
-  repel=TRUE,
-  select.var = list(contrib=fviz_ntop)
-)
-f <- file.path(plot_dir, paste0("pca_fviz_pca_var_pc13.pdf"))
-ggsave(f, p, width=7, height=7)
-
-# graph of variables contributing to PCA
-p <- fviz_pca_var(
-  pca_res,
-  axes = c(2,3),
-  col.var = "contrib", # Color by the quality of representation
-  gradient.cols = c("darkorchid4", "gold", "darkorange"),
-  repel=TRUE,
-  select.var = list(contrib=fviz_ntop)
-)
-f <- file.path(plot_dir, paste0("pca_fviz_pca_var_pc23.pdf"))
-ggsave(f, p, width=7, height=7)
-
-
-
-#
-# PCA plots
-#
-x <- bind_cols(s, as_tibble(pca_res$x))
-
-# bg_ks_dist
-p <- ggplot(x, aes(x=PC1, y=PC2, color=bg_auc)) +
-  geom_point(alpha = 0.8, size=3) +
-  scale_color_viridis_c() +
-  theme_bw() +
-  theme(aspect.ratio=1) +
-  theme(legend.text = element_text(size=7)) +
-  labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
-f <- file.path(plot_dir, paste0("pca_bg_auc.pdf"))
-ggsave(f, plot=p, device="pdf", width=width, height=height)
-
-# patient
-p <- ggplot(x, aes(x=PC1, y=PC2, color=patient, shape=study)) +
-  geom_point(alpha = 0.8, size=3) +
-  # scale_color_manual(values = color_scales$patient) +
-  theme_bw() +
-  theme(aspect.ratio=1) +
-  theme(legend.text = element_text(size=7)) +
-  labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
-f <- file.path(plot_dir, paste0("pca_patient.pdf"))
-ggsave(f, plot=p, device="pdf", width=width, height=height)
-
-# region
-p <- ggplot(x, aes(x=PC1, y=PC2, color=region, shape=study)) +
-  geom_point(alpha = 0.8, size=3) +
-  # scale_color_manual(values = color_scales$patient) +
-  theme_bw() +
-  theme(aspect.ratio=1) +
-  theme(legend.text = element_text(size=7)) +
-  labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
-f <- file.path(plot_dir, paste0("pca_region.pdf"))
-ggsave(f, plot=p, device="pdf", width=width, height=height)
-
-# subset
-p <- ggplot(x, aes(x=PC1, y=PC2, color=subset, shape=study)) +
-  geom_point(alpha = 0.8, size=3) +
-  # scale_color_manual(values = color_scales$patient) +
-  theme_bw() +
-  theme(aspect.ratio=1) +
-  theme(legend.text = element_text(size=7)) +
-  labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
-f <- file.path(plot_dir, paste0("pca_subset.pdf"))
-ggsave(f, plot=p, device="pdf", width=width, height=height)
-
-# study
-p <- ggplot(x, aes(x=PC1, y=PC2, color=study)) +
-  geom_point(alpha = 0.8, size=3) +
-  # scale_color_manual(values=color_scales$path) +
-  theme_bw() +
-  theme(aspect.ratio=1) +
-  theme(legend.text = element_text(size=7)) +
-  labs(x=pca_res.var_txt[1], y=pca_res.var_txt[2])
-f <- file.path(plot_dir, paste0("pca_study.pdf"))
-ggsave(f, plot=p, device="pdf", width=width, height=height)
-
-
-#
-# Plots of PC1, PC2, and PC3
-#
-pca_plot <- function(x, xvar, yvar, color_by, shape_by) {
-  color_by_string <- rlang::as_string(rlang::ensym(color_by))
-  shape_by_string <- rlang::as_string(rlang::ensym(shape_by))
+stgeomx_gsea_pipeline <- function(gsea, de, method) {
+  res <- fgsea_run_batch(de, gs_hallmark,
+                       fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
   
-  # if (is.character(pull(x, {{color_by}}))) {
-  #   scale_color_func <- scale_color_manual(values = color_scales[[color_by_string]])
-  # } else {
-  #   scale_color_func <- scale_color_viridis_c()
-  # }
-
-  p <- ggplot(x, aes(x={{xvar}}, y={{yvar}}, color={{color_by}}, shape={{shape_by}})) +
-    geom_point(alpha = 0.8, size=3) +
-    #scale_color_func +
-    #scale_color_manual(values = color_scales[[color_by_string]]) +
-    #scale_shape_manual(values = shape_scales[[shape_by_string]]) +
-    theme_bw() +
-    theme(aspect.ratio=1,
-          legend.text = element_text(size=7))
-    # coord_fixed() +
-  return(p)
+  res <- fgsea_run_batch(de, gs_ex_panc,
+                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
+  
+  
+  res <- fgsea_run_batch(de, gs_end_panc,
+                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
+  
+  res <- fgsea_run_batch(de, gs_panc_sec,
+                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
+  
+  res <- fgsea_run_batch(de, gs_brain,
+                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
+  
+  res <- fgsea_run_batch(de, gs_ln,
+                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
+  
+  res <- fgsea_run_batch(de, gs_kidney,
+                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
+  
+  res <- fgsea_run_batch(de, gs_colon,
+                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
+  
+  # filter out irrelevant genes in hallmark
+  gsea <- gsea %>%
+  filter(!(pathway %in% c("HALLMARK_ESTROGEN_RESPONSE_LATE", "HALLMARK_ESTROGEN_RESPONSE_EARLY", "HALLMARK_GLYCOLYSIS", "HALLMARK_P53_PATHWAY", "HALLMARK_HEME_METABOLISM", "HALLMARK_ADIPOGENESIS", "HALLMARK_MYC_TARGETS_V2", "HALLMARK_MYC_TARGETS_V1", "HALLMARK_OXIDATIVE_PHOSPHORYLATION", "HALLMARK_HYPOXIA", "HALLMARK_UV_RESPONSE_DN", "HALLMARK_MYOGENESIS", "HALLMARK_APICAL_SURFACE", "HALLMARK_APOPTOSIS", "HALLMARK_IL6_JAK_STAT3_SIGNALING", "HALLMARK_IL2_STAT5_SIGNALING", "HALLMARK_MITOTIC_SPINDLE", "HALLMARK_APICAL_JUNCTION", "HALLMARK_KRAS_SIGNALING_UP", "HALLMARK_KRAS_SIGNALING_DN", "HALLMARK_UNFOLDED_PROTEIN_RESPONSE", "HALLMARK_DNA_REPAIR", "HALLMARK_FATTY_ACID_METABOLISM", "HALLMARK_HEDGEHOG_SIGNALING", "HALLMARK_ANGIOGENESIS", "HALLMARK_E2F_TARGETS", "HALLMARK_G2M_CHECKPOINT", "HALLMARK_TNFA_SIGNALING_VIA_NFKB", "HALLMARK_PROTEIN_SECRETION", "HALLMARK_CHOLESTEROL_HOMEOSTASIS")))
+  
+  return(gsea)
 }
 
+# Run full analysis
+gsea_all <- NULL
+gsea_none_q3 <- NULL
+gsea_none_tmm <- NULL
+gsea_none_rle <- NULL
+gsea_none_qn <- NULL
 
-# bg_auc
-p12 <- pca_plot(x, PC1, PC2, bg_auc, study)
-p13 <- pca_plot(x, PC1, PC3, bg_auc, study)
-p23 <- pca_plot(x, PC2, PC3, bg_auc, study)
-p <- p12 + p13 + p23 + 
-  plot_layout(guides = "collect")
-f <- file.path(plot_dir, paste0("pca_bg_auc_pc123.pdf"))
-ggsave(f, plot=p, device="pdf", width=12, height=6)
+gsea_bgsub_q3 <- NULL
+gsea_bgsub_tmm <- NULL
+gsea_bgsub_rle <- NULL
+gsea_bgsub_qn <- NULL
 
-# region
-p12 <- pca_plot(x, PC1, PC2, region, study)
-p13 <- pca_plot(x, PC1, PC3, region, study)
-p23 <- pca_plot(x, PC2, PC3, region, study)
-p <- p12 + p13 + p23 + 
-  plot_layout(guides = "collect")
-f <- file.path(plot_dir, paste0("pca_region_pc123.pdf"))
-ggsave(f, plot=p, device="pdf", width=12, height=6)
+gsea_qq_q3 <- NULL
+gsea_qq_tmm <- NULL
+gsea_qq_rle <- NULL
+gsea_qq_qn <- NULL
 
-# patient
-p12 <- pca_plot(x, PC1, PC2, patient, study)
-p13 <- pca_plot(x, PC1, PC3, patient, study)
-p23 <- pca_plot(x, PC2, PC3, patient, study)
-p <- p12 + p13 + p23 + 
-  plot_layout(guides = "collect")
-f <- file.path(plot_dir, paste0("pca_patient_pc123.pdf"))
-ggsave(f, plot=p, device="pdf", width=12, height=6)
+# run stgeomx pipeline
+gsea_none_q3 <- stgeomx_gsea_pipeline(gsea_none_q3, de_none_q3, "none_q3")
+gsea_none_tmm <- stgeomx_gsea_pipeline(gsea_none_tmm, de_none_tmm, "none_tmm")
+gsea_none_rle <- stgeomx_gsea_pipeline(gsea_none_rle, de_none_rle, "none_rle")
+gsea_none_qn <- stgeomx_gsea_pipeline(gsea_none_qn, de_none_qn, "none_qn")
 
-# study
-p12 <- pca_plot(x, PC1, PC2, study)
-p13 <- pca_plot(x, PC1, PC3, study)
-p23 <- pca_plot(x, PC2, PC3, study)
-p <- p12 + p13 + p23 + 
-  plot_layout(guides = "collect")
-f <- file.path(plot_dir, paste0("pca_study_pc123.pdf"))
-ggsave(f, plot=p, device="pdf", width=12, height=6)
+gsea_bgsub_q3 <- stgeomx_gsea_pipeline(gsea_bgsub_q3, de_bgsub_q3, "bgsub_q3")
+gsea_bgsub_tmm <- stgeomx_gsea_pipeline(gsea_bgsub_tmm, de_bgsub_tmm, "bgsub_tmm")
+gsea_bgsub_rle <- stgeomx_gsea_pipeline(gsea_bgsub_rle, de_bgsub_rle, "bgsub_rle")
+gsea_bgsub_qn <- stgeomx_gsea_pipeline(gsea_bgsub_qn, de_bgsub_qn, "bgsub_qn")
+
+gsea_qq_q3 <- stgeomx_gsea_pipeline(gsea_qq_q3, de_qq_q3, "qq_q3")
+gsea_qq_tmm <- stgeomx_gsea_pipeline(gsea_qq_tmm, de_qq_tmm, "qq_tmm")
+gsea_qq_rle <- stgeomx_gsea_pipeline(gsea_qq_rle, de_qq_rle, "qq_rle")
+gsea_qq_qn <- stgeomx_gsea_pipeline(gsea_qq_qn, de_qq_qn, "qq_qn")
+
+# # write results for clusters
+# contrasts <- c("clusterPanc", "clusterBrain", "clusterLn", "clusterKidney", "clusterColon")
+# manuscript_pathways <- c(names(gs_hallmark))
+# res <- gsea_all %>% filter(contrast %in% contrasts, 
+#                            pathway %in% manuscript_pathways)
+
+# prefix <- "gsea_all"
+# f <- file.path(results_dir, paste0(prefix, "_results.tsv"))
+# data.table::fwrite(res, file=f, sep="\t", sep2=c("", " ", ""))
+# f <- file.path(results_dir, paste0(prefix, "_results.xlsx"))
+# write_xlsx(res, f)
+```
+### GSEA plots: helper functions
+```{r helpers}
+gsea_padj_cutoff <- 0.01
+gsea_log2fc_cutoff <- 1
+
+# contrasts
+contrasts <- c("clusterPanc", "clusterBrain", "clusterLn", "clusterKidney", "clusterColon")
+
+prep_gsea <- function(gsea) {
+  # prepare gsea results
+  gsea <- gsea %>%
+    filter(contrast %in% contrasts) %>%
+    mutate(padj = 2 * padj) %>%
+    mutate(contrast = factor(contrast, levels=contrasts),
+           neglog10padj = ifelse(padj < gsea_padj_cutoff, -log10(padj), NA),
+           sig = padj < gsea_padj_cutoff) %>%
+    group_by(contrast, pathway) %>%
+    slice_min(padj, n=1, with_ties=FALSE) %>%
+    ungroup()
+  return(gsea)
+}
+
+prep_hallmark <- function(gsea) {
+  # Hallmark
+  res <- gsea %>% filter(pathway %in% names(gs_hallmark)) %>%
+    mutate(pathway = gsub("HALLMARK_", "", pathway))
+  # only keep significant results (at least one contrast)
+  res <- res %>% group_by(pathway) %>%
+    filter(any(padj < gsea_padj_cutoff)) %>%
+    ungroup()
+  return(res)
+}
+
+prep_all <- function(gsea) {
+  # remove pathway prefixes
+  res <- gsea  %>% mutate(pathway = str_replace(pathway, "^HALLMARK_|^GOBP_", ""))
+  # only keep significant results (at least one contrast)
+  res <- res %>% group_by(pathway) %>%
+    filter(any(padj < gsea_padj_cutoff)) %>%
+    ungroup()
+  return(res)
+}
+```
+
+### GSEA plots: by cluster type
+
+```{r gsea plots}
+cluster = "clusterColon"
+
+plot_cluster <- function(res, pathway_levels, cluster) {
+  res_panc <- res %>% filter(contrast == cluster)
+  
+  # Set the pathway levels to be the same as the reference (res_qq_qn)
+  res_panc$pathway <- factor(res_panc$pathway, levels=pathway_levels)
+  
+  # Filter out any NA pathways
+  res_panc <- res_panc %>% filter(!is.na(pathway))
+  
+  p <- ggplot(res_panc, aes(x=NES, y=pathway, fill=neglog10padj)) +
+    geom_col() +
+    scale_fill_viridis_c() +
+    theme_bw() +
+    theme(axis.text.y = element_text(color="black", size=7)) +
+    theme(strip.text = element_text(size=8)) +
+    facet_wrap(~ contrast, nrow=1) +
+    labs(x="Normalized Enrichment Score (NES)", y="Pathway")
+  
+  return (p)
+}
+
+# Prepare and process qq_qn data
+gsea_qq_qn <- prep_gsea(gsea_qq_qn)
+res_qq_qn <- prep_all(gsea_qq_qn)
+
+# Extract pathway levels from res_qq_qn to use for all plots
+pathway_levels <- res_qq_qn %>% filter(contrast == cluster) %>% arrange(NES) %>% pull(pathway)
+
+# Generate qq_qn plot using consistent pathway levels
+p_qq_qn <- plot_cluster(res_qq_qn, pathway_levels, cluster)
+
+# Prepare and process none_q3 data
+gsea_none_q3 <- prep_gsea(gsea_none_q3)
+res_none_q3 <- prep_all(gsea_none_q3)
+p_none_q3 <- plot_cluster(res_none_q3, pathway_levels, cluster)
+
+gsea_none_tmm <- prep_gsea(gsea_none_tmm)
+res_none_tmm <- prep_all(gsea_none_tmm)
+p_none_tmm <- plot_cluster(res_none_tmm, pathway_levels, cluster)
+
+gsea_none_rle <- prep_gsea(gsea_none_rle)
+res_none_rle <- prep_all(gsea_none_rle)
+p_none_rle <- plot_cluster(res_none_rle, pathway_levels, cluster)
+
+gsea_none_qn <- prep_gsea(gsea_none_qn)
+res_none_qn <- prep_all(gsea_none_qn)
+p_none_qn <- plot_cluster(res_none_qn, pathway_levels, cluster)
+
+gsea_bgsub_q3 <- prep_gsea(gsea_bgsub_q3)
+res_bgsub_q3 <- prep_all(gsea_bgsub_q3)
+p_bgsub_q3 <- plot_cluster(res_bgsub_q3, pathway_levels, cluster)
+
+gsea_bgsub_tmm <- prep_gsea(gsea_bgsub_tmm)
+res_bgsub_tmm <- prep_all(gsea_bgsub_tmm)
+p_bgsub_tmm <- plot_cluster(res_bgsub_tmm, pathway_levels, cluster)
+
+gsea_bgsub_rle <- prep_gsea(gsea_bgsub_rle)
+res_bgsub_rle <- prep_all(gsea_bgsub_rle)
+p_bgsub_rle <- plot_cluster(res_bgsub_rle, pathway_levels, cluster)
+
+gsea_bgsub_qn <- prep_gsea(gsea_bgsub_qn)
+res_bgsub_qn <- prep_all(gsea_bgsub_qn)
+p_bgsub_qn <- plot_cluster(res_bgsub_qn, pathway_levels, cluster)
+
+
+# Prepare and process qq
+gsea_qq_q3 <- prep_gsea(gsea_qq_q3)
+res_qq_q3 <- prep_all(gsea_qq_q3)
+p_qq_q3 <- plot_cluster(res_qq_q3, pathway_levels, cluster)
+
+gsea_qq_tmm <- prep_gsea(gsea_qq_tmm)
+res_qq_tmm <- prep_all(gsea_qq_tmm)
+p_qq_tmm <- plot_cluster(res_qq_tmm, pathway_levels, cluster)
+
+gsea_qq_rle <- prep_gsea(gsea_qq_rle)
+res_qq_rle <- prep_all(gsea_qq_rle)
+p_qq_rle <- plot_cluster(res_qq_rle, pathway_levels, cluster)
+
+gsea_qq_qn <- prep_gsea(gsea_qq_qn)
+res_qq_qn <- prep_all(gsea_qq_qn)
+p_qq_qn <- plot_cluster(res_qq_qn, pathway_levels, cluster)
+```
+ 
+### GSEA combined plot: cluster type
+``` {r GSEA combined plot}
+gsea_dir <- file.path(plot_dir, "gsea")
+
+# Grid column and row titles
+col_titles <- list(
+  wrap_elements(grid::textGrob('', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('Q3', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('TMM', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('RLE', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('QN', gp = grid::gpar(fontsize = 18, fontface = "bold")))
+)
+
+row_titles <- list(
+  wrap_elements(grid::textGrob('NONE', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('BGSub', gp = grid::gpar(fontsize = 18, fontface = "bold"))),
+  wrap_elements(grid::textGrob('QQ', gp = grid::gpar(fontsize = 18, fontface = "bold")))
+)
+
+# Create grid
+p <- wrap_plots(
+  col_titles[[1]], col_titles[[2]], col_titles[[3]], col_titles[[4]], col_titles[[5]],
+  row_titles[[1]], p_none_q3, p_none_tmm, p_none_rle, p_none_qn,
+  row_titles[[2]], p_bgsub_q3, p_bgsub_q3, p_bgsub_q3, p_bgsub_q3,
+  row_titles[[3]], p_qq_q3, p_qq_q3, p_qq_q3, p_qq_qn,
+  ncol = 5,
+  heights = c(0.1, 1, 1, 1),
+  widths = c(0.3, 1, 1, 1, 1)
+) +
+plot_layout(
+  guides = 'collect'
+) &
+theme(plot.margin = unit(c(0.5, 1, 1, 1), "cm"))
+
+# Add titles
+p <- p + 
+  plot_annotation(
+    title = "Effect of Background Correction and Normalization Methods on PCA"
+  ) & 
+  theme(
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5)
+  )
+
+f <- file.path(gsea_dir, "gsea_colon")
+ggsave(paste0(f, ".png"), p, width=35, height=20)
+ggsave(paste0(f, ".pdf"), p, width=35, height=20)
+```
+
+
+### GSEA plots: by bg + normalization
+``` {r gsea bg_norm}
+gsea_dir <- file.path(plot_dir, "gsea")
+
+contrasts <- c("clusterPanc", "clusterBrain", "clusterLn", "clusterKidney", "clusterColon")
+
+plot_clusters <- function(res) {
+  res_panc <- res %>% filter(contrast == "clusterPanc")
+  pathway_levels <- res_panc %>% filter(contrast == "clusterPanc") %>% arrange(NES) %>% pull(pathway)
+  res_panc$pathway <- factor(res_panc$pathway, levels=pathway_levels)
+  
+  res_brain <- res %>% filter(contrast == "clusterBrain")
+  pathway_levels <- res_brain %>% filter(contrast == "clusterBrain") %>% arrange(NES) %>% pull(pathway)
+  res_brain$pathway <- factor(res_brain$pathway, levels=pathway_levels)
+  
+  res_ln <- res %>% filter(contrast == "clusterLn")
+  pathway_levels <- res_ln %>% filter(contrast == "clusterLn") %>% arrange(NES) %>% pull(pathway)
+  res_ln$pathway <- factor(res_ln$pathway, levels=pathway_levels)
+  
+  res_kidney <- res %>% filter(contrast == "clusterKidney")
+  pathway_levels <- res_kidney %>% filter(contrast == "clusterKidney") %>% arrange(NES) %>% pull(pathway)
+  res_kidney$pathway <- factor(res_kidney$pathway, levels=pathway_levels)
+  
+  res_colon <- res %>% filter(contrast == "clusterColon")
+  pathway_levels <- res_colon %>% filter(contrast == "clusterColon") %>% arrange(NES) %>% pull(pathway)
+  res_colon$pathway <- factor(res_colon$pathway, levels=pathway_levels)
+  
+  p_panc <- ggplot(res_panc, aes(x=NES, y=pathway, fill=neglog10padj)) +
+    geom_col() +
+    scale_fill_viridis_c() +
+    theme_bw() +
+    theme(axis.text.y = element_text(color="black", size=7)) +
+    theme(strip.text = element_text(size=8)) +
+    facet_wrap(~ contrast, nrow=1) +
+    labs(x="Normalized Enrichment Score (NES)", y="Pathway")
+  p_brain <- ggplot(res_brain, aes(x=NES, y=pathway, fill=neglog10padj)) +
+    geom_col() +
+    scale_fill_viridis_c() +
+    theme_bw() +
+    theme(axis.text.y = element_text(color="black", size=7)) +
+    theme(strip.text = element_text(size=8)) +
+    facet_wrap(~ contrast, nrow=1) +
+    labs(x="Normalized Enrichment Score (NES)", y="Pathway")
+  p_ln <- ggplot(res_ln, aes(x=NES, y=pathway, fill=neglog10padj)) +
+    geom_col() +
+    scale_fill_viridis_c() +
+    theme_bw() +
+    theme(axis.text.y = element_text(color="black", size=7)) +
+    theme(strip.text = element_text(size=8)) +
+    facet_wrap(~ contrast, nrow=1) +
+    labs(x="Normalized Enrichment Score (NES)", y="Pathway")
+  p_kidney <- ggplot(res_kidney, aes(x=NES, y=pathway, fill=neglog10padj)) +
+    geom_col() +
+    scale_fill_viridis_c() +
+    theme_bw() +
+    theme(axis.text.y = element_text(color="black", size=7)) +
+    theme(strip.text = element_text(size=8)) +
+    facet_wrap(~ contrast, nrow=1) +
+    labs(x="Normalized Enrichment Score (NES)", y="Pathway")
+  p_colon <- ggplot(res_colon, aes(x=NES, y=pathway, fill=neglog10padj)) +
+    geom_col() +
+    scale_fill_viridis_c() +
+    theme_bw() +
+    theme(axis.text.y = element_text(color="black", size=7)) +
+    theme(strip.text = element_text(size=8)) +
+    facet_wrap(~ contrast, nrow=1) +
+    labs(x="Normalized Enrichment Score (NES)", y="Pathway")
+  
+  return (p_panc + p_brain + p_ln + p_kidney + p_colon)
+}
+
+gsea_none_q3 <- prep_gsea(gsea_none_q3)
+res_none_q3 <- prep_all(gsea_none_q3)
+p <- plot_clusters(res_none_q3)
+f <- file.path(gsea_dir, "gsea_none_q3")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+
+gsea_none_tmm <- prep_gsea(gsea_none_tmm)
+res_none_tmm <- prep_all(gsea_none_tmm)
+p <- plot_clusters(res_none_tmm)
+f <- file.path(gsea_dir, "gsea_none_tmm")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+
+gsea_none_rle <- prep_gsea(gsea_none_rle)
+res_none_rle <- prep_all(gsea_none_rle)
+p <- plot_clusters(res_none_rle)
+f <- file.path(gsea_dir, "gsea_none_rle")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+
+gsea_none_qn <- prep_gsea(gsea_none_qn)
+res_none_qn <- prep_all(gsea_none_qn)
+p <- plot_clusters(res_none_qn)
+f <- file.path(gsea_dir, "gsea_none_qn")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+
+gsea_bgsub_q3 <- prep_gsea(gsea_bgsub_q3)
+res_bgsub_q3 <- prep_all(gsea_bgsub_q3)
+p <- plot_clusters(res_bgsub_q3)
+f <- file.path(gsea_dir, "gsea_bgsub_q3")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+
+gsea_bgsub_tmm <- prep_gsea(gsea_bgsub_tmm)
+res_bgsub_tmm <- prep_all(gsea_bgsub_tmm)
+p <- plot_clusters(res_bgsub_tmm)
+f <- file.path(gsea_dir, "gsea_bgsub_tmm")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+
+gsea_bgsub_rle <- prep_gsea(gsea_bgsub_rle)
+res_bgsub_rle <- prep_all(gsea_bgsub_rle)
+p <- plot_clusters(res_bgsub_rle)
+f <- file.path(gsea_dir, "gsea_bgsub_rle")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+
+gsea_bgsub_qn <- prep_gsea(gsea_bgsub_qn)
+res_bgsub_qn <- prep_all(gsea_bgsub_qn)
+p <- plot_clusters(res_bgsub_qn)
+f <- file.path(gsea_dir, "gsea_bgsub_qn")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+
+gsea_qq_q3 <- prep_gsea(gsea_qq_q3)
+res_qq_q3 <- prep_all(gsea_qq_q3)
+p <- plot_clusters(res_qq_q3)
+f <- file.path(gsea_dir, "gsea_qq_q3")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+
+gsea_qq_tmm <- prep_gsea(gsea_qq_tmm)
+res_qq_tmm <- prep_all(gsea_qq_tmm)
+p <- plot_clusters(res_qq_tmm)
+f <- file.path(gsea_dir, "gsea_qq_tmm")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+
+gsea_qq_rle <- prep_gsea(gsea_qq_rle)
+res_qq_rle <- prep_all(gsea_qq_rle)
+p <- plot_clusters(res_qq_rle)
+f <- file.path(gsea_dir, "gsea_qq_rle")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
+
+gsea_qq_qn <- prep_gsea(gsea_qq_qn)
+res_qq_qn <- prep_all(gsea_qq_qn)
+p <- plot_clusters(res_qq_qn)
+f <- file.path(gsea_dir, "gsea_qq_qn")
+ggsave(paste0(f, ".png"), p, width=20, height=15)
+ggsave(paste0(f, ".pdf"), p, width=20, height=15)
 ```

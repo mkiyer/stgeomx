@@ -1,0 +1,3 @@
+{
+  "GOBP_ENDOCRINE_PANCREAS_DEVELOPMENT" : {"systematicName":"M12875","pmid":"","exactSource":"GO:0031018","geneSymbols":["AKT1","BAD","BAK1","BHLHA15","BMAL1","BMP4","BMP5","BMP6","CDH2","CDK6","CLOCK","DLL1","EIF2AK3","FOXA2","GATA6","GDF11","GIP","GIPR","GSK3A","GSK3B","HES1","IL6","IL6R","INSM1","MIR541","MNX1","NEUROD1","NKX2-2","NKX6-1","NKX6-2","ONECUT1","ONECUT2","PAX6","PDPK1","PDX1","RFX3","RFX6","RHEB","SIDT2","SMO","SOX4","SOX9","WNT5A","ZNF800"],"msigdbURL":"https://www.gsea-msigdb.org/gsea/msigdb/human/geneset/GOBP_ENDOCRINE_PANCREAS_DEVELOPMENT","externalDetailsURL":["http://amigo.geneontology.org/amigo/term/GO:0031018"],"filteredBySimilarity":[],"externalNamesForSimilarTerms":[],"collection":"C5:GO:BP"}
+}
