@@ -2273,6 +2273,151 @@ gsea_qq_qn <- stgeomx_gsea_pipeline(gsea_qq_qn, de_qq_qn, "qq_qn")
 # f <- file.path(results_dir, paste0(prefix, "_results.xlsx"))
 # write_xlsx(res, f)
 ```
+
+### GSEA: all msigdb
+```{r all_msigdb}
+gsea_nperms <- 10000
+
+read_msigdb_json_file <- function(filename) {
+  x <- jsonlite::fromJSON(filename)
+  y <- tibble(gs_name = names(x), gs = x) %>% 
+    unnest_wider(gs) %>%
+    unnest_longer(geneSymbols) %>%
+    select(gs_cat = collection,
+           gs_name = gs_name,
+           gene_symbol = geneSymbols)
+}
+
+# read msigdb data
+
+f <- system.file("extdata", "msigdb.v2024.1.Hs.json", package = "stgeomx")
+msigdb_gene_sets <- read_msigdb_json_file(f)
+
+# determine gene universe
+msigdb_genes <- intersect(gene_universe, msigdb_gene_sets$gene_symbol)
+
+# filter genes not in our dataset
+msigdb_gene_sets <- msigdb_gene_sets %>%
+  dplyr::filter(gene_symbol %in% gene_universe) %>%
+  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+
+# gene set categories
+gs_hallmark <- dplyr::filter(msigdb_gene_sets, gs_cat == "H")
+gs_hallmark <- split(x = gs_hallmark$gene_symbol, f = gs_hallmark$gs_name)
+gs_gobp <- dplyr::filter(msigdb_gene_sets, gs_cat == "C5:GO:BP")
+gs_gobp <- split(x = gs_gobp$gene_symbol, f = gs_gobp$gs_name)
+gs_3ca <- dplyr::filter(msigdb_gene_sets, gs_cat == "C4:3CA")
+gs_3ca <- split(x = gs_3ca$gene_symbol, f = gs_3ca$gs_name)
+
+cp_cat <- c("C2:CP:BIOCARTA", "C2:CP:KEGG_MEDICUS", "C2:CP:PID", "C2:CP:REACTOME",
+            "C2:CP:WIKIPATHWAYS")
+gs_cp <- dplyr::filter(msigdb_gene_sets, gs_cat %in% cp_cat)
+gs_cp <- split(x = gs_cp$gene_symbol, f = gs_cp$gs_name)
+gs_tft <- dplyr::filter(msigdb_gene_sets, gs_cat == "C3:TFT:GTRD")
+gs_tft <- split(x = gs_tft$gene_symbol, f = gs_tft$gs_name)
+
+# new gsea code
+get_fgsea_ranks_de <- function(xde, mycontrast) {
+  ranks <- xde %>%
+    dplyr::filter(contrast == mycontrast) %>%
+    select(gene, log2fc, padj) %>%
+    mutate(rank = log2fc)
+  ranks = sort(setNames(ranks$rank, ranks$gene), decreasing = TRUE)
+  return(ranks)
+}
+ 
+ 
+fgsea_run_batch <- function(xde, xgs,
+                            fgsea_eps=0,
+                            fgsea_nperms=1000) {
+  gsea <- NULL
+  for (xcontrast in unique(xde$contrast)) {
+    ranks <- get_fgsea_ranks_de(xde, xcontrast)
+    res <- fgsea(pathways=xgs,
+                 stats=ranks,
+                 eps=fgsea_eps,
+                 nPermSimple=fgsea_nperms)
+    res <- mutate(res, contrast = xcontrast)
+    gsea <- bind_rows(gsea, res)     
+  }
+  return(gsea)
+}
+
+stgeomx_gsea_pipeline <- function(gsea, de, method) {
+  res <- fgsea_run_batch(de, gs_hallmark,
+                       fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
+  
+  res <- fgsea_run_batch(de, gs_gobp,
+                       fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
+  
+  res <- fgsea_run_batch(de, gs_3ca,
+                       fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
+  
+  res <- fgsea_run_batch(de, gs_cp,
+                       fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
+  
+  res <- fgsea_run_batch(de, gs_tft,
+                       fgsea_eps=0, fgsea_nperms=gsea_nperms)
+  res <- res %>% mutate(method = method)
+  gsea <- bind_rows(gsea, res)
+  
+  return(gsea)
+}
+
+# Run full analysis
+gsea_all <- NULL
+gsea_none_q3 <- NULL
+gsea_none_tmm <- NULL
+gsea_none_rle <- NULL
+gsea_none_qn <- NULL
+
+gsea_bgsub_q3 <- NULL
+gsea_bgsub_tmm <- NULL
+gsea_bgsub_rle <- NULL
+gsea_bgsub_qn <- NULL
+
+gsea_qq_q3 <- NULL
+gsea_qq_tmm <- NULL
+gsea_qq_rle <- NULL
+gsea_qq_qn <- NULL
+
+# run stgeomx pipeline
+gsea_none_q3 <- stgeomx_gsea_pipeline(gsea_none_q3, de_none_q3, "none_q3")
+gsea_none_tmm <- stgeomx_gsea_pipeline(gsea_none_tmm, de_none_tmm, "none_tmm")
+gsea_none_rle <- stgeomx_gsea_pipeline(gsea_none_rle, de_none_rle, "none_rle")
+gsea_none_qn <- stgeomx_gsea_pipeline(gsea_none_qn, de_none_qn, "none_qn")
+
+gsea_bgsub_q3 <- stgeomx_gsea_pipeline(gsea_bgsub_q3, de_bgsub_q3, "bgsub_q3")
+gsea_bgsub_tmm <- stgeomx_gsea_pipeline(gsea_bgsub_tmm, de_bgsub_tmm, "bgsub_tmm")
+gsea_bgsub_rle <- stgeomx_gsea_pipeline(gsea_bgsub_rle, de_bgsub_rle, "bgsub_rle")
+gsea_bgsub_qn <- stgeomx_gsea_pipeline(gsea_bgsub_qn, de_bgsub_qn, "bgsub_qn")
+
+gsea_qq_q3 <- stgeomx_gsea_pipeline(gsea_qq_q3, de_qq_q3, "qq_q3")
+gsea_qq_tmm <- stgeomx_gsea_pipeline(gsea_qq_tmm, de_qq_tmm, "qq_tmm")
+gsea_qq_rle <- stgeomx_gsea_pipeline(gsea_qq_rle, de_qq_rle, "qq_rle")
+gsea_qq_qn <- stgeomx_gsea_pipeline(gsea_qq_qn, de_qq_qn, "qq_qn")
+
+# write results for clusters
+contrasts <- c("clusterPanc", "clusterBrain", "clusterLn", "clusterKidney", "clusterColon")
+manuscript_pathways <- c(names(gs_hallmark), names(gs_gobp), names(gs_3ca), names(gs_cp), names(gs_tft))
+res <- gsea_all %>% filter(contrast %in% contrasts,
+                           pathway %in% manuscript_pathways)
+
+prefix <- "gsea_all"
+f <- file.path(results_dir, paste0(prefix, "_results.tsv"))
+data.table::fwrite(res, file=f, sep="\t", sep2=c("", " ", ""))
+f <- file.path(results_dir, paste0(prefix, "_results.xlsx"))
+write_xlsx(res, f)
+```
+
 ### GSEA plots: helper functions
 ```{r helpers}
 gsea_padj_cutoff <- 0.01
