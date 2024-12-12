@@ -19,6 +19,9 @@ library(tidyverse)
 library(readxl)
 library(ggrepel)
 library(pheatmap)
+library(dplyr)
+library(tidyr)
+library(jsonlite)
 
 # bioconductor packages
 library(factoextra)
@@ -57,6 +60,9 @@ save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
 
 # input directories
 working_dir <- "/Users/madisoncaldwell/Desktop/stgeomx"
+
+# load package
+install.packages(working_dir, repos = NULL, type = "source")
 
 # EDITED (Madison)
 data_dir <- "/Users/madisoncaldwell/Desktop/research/data"
@@ -1754,11 +1760,13 @@ run_limma_trend <- function(y, design, contrasts, padj_cutoff, log2fc_cutoff) {
   fit <- eBayes(fit, trend=TRUE)
 
   x <- NULL
+  res <- NULL
+  
   for (coef in colnames(contrasts)) {
     res <- topTable(fit, coef=coef, number=Inf, sort.by="none")
     res <- as_tibble(res, rownames="gene")
     res <- res %>%
-      select(gene,
+      dplyr::select(gene,
              log2fc=logFC,
              avgexpr=AveExpr,
              pval=P.Value,
@@ -1835,97 +1843,97 @@ for (mycontrast in unique(de$contrast)) {
 
 ## DE Heatmaps
 
-```{r de heatmaps, include=FALSE}
-
-# heatmap functions
-plot_pheatmap <- function(m, 
-                          annot_col,
-                          # annot_row, 
-                          annot_colors,
-                          filename, width, height,
-                          xmin=-6, xmax=6) {
-  pheatmap(m,
-           scale = "none",
-           color = colorRampPalette(c("navy", "white", "firebrick3"))(50),
-           breaks = seq(xmin, xmax, length.out=51),
-           annotation_col = annot_col,
-           # annotation_row = annot_row,
-           # annotation_colors = annot_colors,
-           border_color = NA,
-           cluster_rows = TRUE,
-           cluster_cols = TRUE,
-           clustering_distance_rows = "euclidean",
-           clustering_distance_cols = "euclidean",
-           clustering_method = "ward.D2",
-#           cellwidth = 6,
-#           cellheight = 6,
-           fontsize = 6,
-           fontsize_row = 6,
-           fontsize_col = 6,
-           filename = filename, 
-           width = width,
-           height = height)
-}
-
-# setup heatmap annotations
-# column annotations: show clusters, study
-# no row annotations
-gene_annot <- fds_qq_qn$meta
-# %>%
-#   left_join(hpa_pdac, by=c("gene"="gene_symbol")) %>%
-#   left_join(cptac_de_merged, by=c("gene"="gene_symbol")) %>%
-#   mutate(de_cptac_rna = replace_na(de_cptac_rna, "na"),
-#          de_cptac_prot = replace_na(de_cptac_prot, "na"))
-# annot_row <- gene_annot %>%
-#   select(gene) %>%
-#   column_to_rownames("gene") %>%
+ ```{r de heatmaps, include=FALSE}
+# 
+# # heatmap functions
+# plot_pheatmap <- function(m, 
+#                           annot_col,
+#                           # annot_row, 
+#                           annot_colors,
+#                           filename, width, height,
+#                           xmin=-6, xmax=6) {
+#   pheatmap(m,
+#            scale = "none",
+#            color = colorRampPalette(c("navy", "white", "firebrick3"))(50),
+#            breaks = seq(xmin, xmax, length.out=51),
+#            annotation_col = annot_col,
+#            # annotation_row = annot_row,
+#            # annotation_colors = annot_colors,
+#            border_color = NA,
+#            cluster_rows = TRUE,
+#            cluster_cols = TRUE,
+#            clustering_distance_rows = "euclidean",
+#            clustering_distance_cols = "euclidean",
+#            clustering_method = "ward.D2",
+# #           cellwidth = 6,
+# #           cellheight = 6,
+#            fontsize = 6,
+#            fontsize_row = 6,
+#            fontsize_col = 6,
+#            filename = filename, 
+#            width = width,
+#            height = height)
+# }
+# 
+# # setup heatmap annotations
+# # column annotations: show clusters, study
+# # no row annotations
+# gene_annot <- fds_qq_qn$meta
+# # %>%
+# #   left_join(hpa_pdac, by=c("gene"="gene_symbol")) %>%
+# #   left_join(cptac_de_merged, by=c("gene"="gene_symbol")) %>%
+# #   mutate(de_cptac_rna = replace_na(de_cptac_rna, "na"),
+# #          de_cptac_prot = replace_na(de_cptac_prot, "na"))
+# # annot_row <- gene_annot %>%
+# #   select(gene) %>%
+# #   column_to_rownames("gene") %>%
+# #   as.data.frame()
+# annot_col <- column_to_rownames(fds_qq_qn$samples, "aoi") %>%
+#   select(study, cluster_name) %>%
 #   as.data.frame()
-annot_col <- column_to_rownames(fds_qq_qn$samples, "aoi") %>%
-  select(study, cluster_name) %>%
-  as.data.frame()
-
-#
-# IPMN clusters
-#
-# de gene params
-padj_cutoff <- 0.01
-log2fc_cutoff <- 3
-ntop <- 10
-contrasts <- c("clusterPanc", "clusterLn", "clusterKidney", "clusterColon", "clusterBrain")
-
-g <- filter(de_qq_qn, contrast %in% contrasts,
-            abs(log2fc) > log2fc_cutoff, 
-            padj < padj_cutoff) %>%
-  group_by(contrast, de) %>%
-  slice_max(abs(log2fc), n=ntop) %>%
-  ungroup() %>%
-  distinct(gene) %>% 
-  pull(gene)
-ngenes <- length(g)
-cluster_marker_genes <- g
-
-# centered gene expression (subtract median)
-s <- fds_qq_qn$samples
-x <- log2_norm_cpm_qq_qn[g, s$aoi]
-u <- apply(x, 1, mean)
-x <- sweep(x, 1, u, FUN="-")
-xmin <- -6
-xmax <- 6
-
-# heatmap
-heatmap_dir <- file.path(plot_dir, "heatmap")
-
-f <- file.path(plot_dir,  paste0("heatmap_de_cluster_markers_", ngenes, "_genes"))
-h <- 6
-w <- 6
-p <- plot_pheatmap(x, 
-                   annot_col[s$aoi,], 
-                   annot_row[g,], 
-                   annot_colors=scale_color_continuous(),
-                   filename=paste0(f, ".png"), 
-                   width=w, height=h,
-                   xmin=xmin, xmax=xmax)
-save_pheatmap_pdf(p, filename=paste0(f, ".pdf"), width=w, height=h)
+# 
+# #
+# # IPMN clusters
+# #
+# # de gene params
+# padj_cutoff <- 0.01
+# log2fc_cutoff <- 3
+# ntop <- 10
+# contrasts <- c("clusterPanc", "clusterLn", "clusterKidney", "clusterColon", "clusterBrain")
+# 
+# g <- filter(de_qq_qn, contrast %in% contrasts,
+#             abs(log2fc) > log2fc_cutoff, 
+#             padj < padj_cutoff) %>%
+#   group_by(contrast, de) %>%
+#   slice_max(abs(log2fc), n=ntop) %>%
+#   ungroup() %>%
+#   distinct(gene) %>% 
+#   pull(gene)
+# ngenes <- length(g)
+# cluster_marker_genes <- g
+# 
+# # centered gene expression (subtract median)
+# s <- fds_qq_qn$samples
+# x <- log2_norm_cpm_qq_qn[g, s$aoi]
+# u <- apply(x, 1, mean)
+# x <- sweep(x, 1, u, FUN="-")
+# xmin <- -6
+# xmax <- 6
+# 
+# # heatmap
+# heatmap_dir <- file.path(plot_dir, "heatmap")
+# 
+# f <- file.path(plot_dir,  paste0("heatmap_de_cluster_markers_", ngenes, "_genes"))
+# h <- 6
+# w <- 6
+# p <- plot_pheatmap(x, 
+#                    annot_col[s$aoi,], 
+#                    annot_row[g,], 
+#                    annot_colors=scale_color_continuous(),
+#                    filename=paste0(f, ".png"), 
+#                    width=w, height=h,
+#                    xmin=xmin, xmax=xmax)
+# save_pheatmap_pdf(p, filename=paste0(f, ".pdf"), width=w, height=h)
 
 
 ```
@@ -1940,7 +1948,6 @@ y <- log2_norm_cpm_qq_qn
 feature_plot_genes <- c("MS4A1", "CPA1", "SNAP25", "IGHA1", "IGHG1")
 
 for (gene in feature_plot_genes) {
-  print(gene)
   x <- bind_cols(s, as_tibble(pca_res_qq_qn$x), gene=unlist(y[gene,]))
   p <- ggplot(x, aes(x=PC1, y=PC2, color=gene, shape=study)) +
     geom_point(alpha = 0.8, size=3) +
@@ -1960,306 +1967,308 @@ for (gene in feature_plot_genes) {
 
 ```{r ipmn de 2d scatter plots}
 
-plot_de_scatter2d <- function(tbl, xcontrast, ycontrast, nlabel=10, 
-                              highlight_genes=NULL) {
-  if (is.null(highlight_genes)) {
-    highlight_genes <- c()
-  }
-  xde <- sym(paste0("de_", xcontrast))
-  yde <- sym(paste0("de_", ycontrast))
-  xlog2fc <- sym(paste0("log2fc_", xcontrast))
-  ylog2fc <- sym(paste0("log2fc_", ycontrast))
-
-  x <- tbl %>% 
-    mutate(subtype = paste0("x", {{xde}}, "_", "y", {{yde}}),
-           log2fc_abs_x = case_when({{xde}} == "no" ~ 0,
-                                    TRUE ~ abs({{xlog2fc}})),
-           log2fc_abs_y = case_when({{yde}} == "no" ~ 0,
-                                    TRUE ~ abs({{ylog2fc}})),
-           log2fc_abs_max = pmax(log2fc_abs_x, log2fc_abs_y))
-  
-  color_scale = c(xno_yno = "#888888",
-                  xup_yup = "#FF0000",
-                  xdn_ydn = "#0000aa",
-                  xup_ydn = "#eeee00",
-                  xdn_yup = "#ff00ff",
-                  xup_yno = "#32cd32",
-                  xdn_yno = "#670092",
-                  xno_yup = "#ff6700",
-                  xno_ydn = "#16ccc4")
-  size_scale = c(xno_yno = 1, 
-                 xup_yup = 2,
-                 xdn_ydn = 2,
-                 xup_ydn = 2,
-                 xdn_yup = 2,
-                 xup_yno = 2,
-                 xdn_yno = 2,
-                 xno_yup = 2,
-                 xno_ydn = 2)
-  
-  annot_data <- filter(x, subtype != "xno_yno")
-  none_data <- filter(x, subtype == "xno_yno")
-  label_data <- annot_data %>% 
-    group_by(subtype) %>%
-    slice_max(log2fc_abs_max, n=nlabel) %>%
-    ungroup()
-  highlight_data <- filter(x, gene %in% highlight_genes)
-
-  p <- ggplot(x, aes(x={{xlog2fc}}, 
-                     y={{ylog2fc}},
-                     color=subtype, 
-                     size=subtype)) +
-    geom_point(data=none_data, alpha=0.4) + 
-    geom_point(data=annot_data, alpha=0.8) +
-    geom_text_repel(data=label_data, color="black", size=3, aes(label=gene), max.overlaps=Inf) + 
-    geom_point(data=highlight_data, pch=21, fill=NA, size=5, colour="#ffff00", stroke=1) + 
-    geom_point(data=highlight_data, pch=21, fill=NA, size=4, colour="#222222", stroke=1, alpha=0.5) +
-    geom_text_repel(data=highlight_data, color="black", size=3, aes(label=gene), max.overlaps=Inf) +     
-    scale_color_manual(values = color_scale) +
-    scale_size_manual(values = size_scale, guide = "none") + 
-    theme_minimal() +
-    xlab(rlang::as_string(xlog2fc)) +
-    ylab(rlang::as_string(ylog2fc)) +
-    labs(color = "DE Genes")
-  return(p)
-}
-
-
-# merge de analysis by gene
-de_merged <- de_qq_qn %>% select(gene, contrast, log2fc, padj, de) %>%
-  pivot_wider(names_from = contrast, values_from = c(log2fc, padj, de))
-nlabel <- 10
-width <- 8
-height <- 8
-
-#
-# IPMN Clusters
-#
-p <- plot_de_scatter2d(de_merged, 
-                       xcontrast="clusterColon", 
-                       ycontrast="clusterLn", 
-                       nlabel=nlabel) +
-  labs(title="IPMN Specimens", 
-       subtitle="clusterColon (x-axis) clusterLn (y-axis)")
-f <- file.path(plot_dir, "scatter2d_de_x_clusterColon_y_clusterLn")
-ggsave(paste0(f, ".pdf"), plot=p, width=8, height=8)
-ggsave(paste0(f, ".png"), plot=p, width=8, height=8)
+# plot_de_scatter2d <- function(tbl, xcontrast, ycontrast, nlabel=10, 
+#                               highlight_genes=NULL) {
+#   if (is.null(highlight_genes)) {
+#     highlight_genes <- c()
+#   }
+#   xde <- sym(paste0("de_", xcontrast))
+#   yde <- sym(paste0("de_", ycontrast))
+#   xlog2fc <- sym(paste0("log2fc_", xcontrast))
+#   ylog2fc <- sym(paste0("log2fc_", ycontrast))
+# 
+#   x <- tbl %>% 
+#     mutate(subtype = paste0("x", {{xde}}, "_", "y", {{yde}}),
+#            log2fc_abs_x = case_when({{xde}} == "no" ~ 0,
+#                                     TRUE ~ abs({{xlog2fc}})),
+#            log2fc_abs_y = case_when({{yde}} == "no" ~ 0,
+#                                     TRUE ~ abs({{ylog2fc}})),
+#            log2fc_abs_max = pmax(log2fc_abs_x, log2fc_abs_y))
+#   
+#   color_scale = c(xno_yno = "#888888",
+#                   xup_yup = "#FF0000",
+#                   xdn_ydn = "#0000aa",
+#                   xup_ydn = "#eeee00",
+#                   xdn_yup = "#ff00ff",
+#                   xup_yno = "#32cd32",
+#                   xdn_yno = "#670092",
+#                   xno_yup = "#ff6700",
+#                   xno_ydn = "#16ccc4")
+#   size_scale = c(xno_yno = 1, 
+#                  xup_yup = 2,
+#                  xdn_ydn = 2,
+#                  xup_ydn = 2,
+#                  xdn_yup = 2,
+#                  xup_yno = 2,
+#                  xdn_yno = 2,
+#                  xno_yup = 2,
+#                  xno_ydn = 2)
+#   
+#   annot_data <- filter(x, subtype != "xno_yno")
+#   none_data <- filter(x, subtype == "xno_yno")
+#   label_data <- annot_data %>% 
+#     group_by(subtype) %>%
+#     slice_max(log2fc_abs_max, n=nlabel) %>%
+#     ungroup()
+#   highlight_data <- filter(x, gene %in% highlight_genes)
+# 
+#   p <- ggplot(x, aes(x={{xlog2fc}}, 
+#                      y={{ylog2fc}},
+#                      color=subtype, 
+#                      size=subtype)) +
+#     geom_point(data=none_data, alpha=0.4) + 
+#     geom_point(data=annot_data, alpha=0.8) +
+#     geom_text_repel(data=label_data, color="black", size=3, aes(label=gene), max.overlaps=Inf) + 
+#     geom_point(data=highlight_data, pch=21, fill=NA, size=5, colour="#ffff00", stroke=1) + 
+#     geom_point(data=highlight_data, pch=21, fill=NA, size=4, colour="#222222", stroke=1, alpha=0.5) +
+#     geom_text_repel(data=highlight_data, color="black", size=3, aes(label=gene), max.overlaps=Inf) +     
+#     scale_color_manual(values = color_scale) +
+#     scale_size_manual(values = size_scale, guide = "none") + 
+#     theme_minimal() +
+#     xlab(rlang::as_string(xlog2fc)) +
+#     ylab(rlang::as_string(ylog2fc)) +
+#     labs(color = "DE Genes")
+#   return(p)
+# }
+# 
+# 
+# # merge de analysis by gene
+# de_merged <- de_qq_qn %>% select(gene, contrast, log2fc, padj, de) %>%
+#   pivot_wider(names_from = contrast, values_from = c(log2fc, padj, de))
+# nlabel <- 10
+# width <- 8
+# height <- 8
+# 
+# #
+# # IPMN Clusters
+# #
+# p <- plot_de_scatter2d(de_merged, 
+#                        xcontrast="clusterColon", 
+#                        ycontrast="clusterLn", 
+#                        nlabel=nlabel) +
+#   labs(title="IPMN Specimens", 
+#        subtitle="clusterColon (x-axis) clusterLn (y-axis)")
+# f <- file.path(plot_dir, "scatter2d_de_x_clusterColon_y_clusterLn")
+# ggsave(paste0(f, ".pdf"), plot=p, width=8, height=8)
+# ggsave(paste0(f, ".png"), plot=p, width=8, height=8)
 
 ```
 
 ## FIGURE 6: GSEA
 ``` {r gsea}
-gsea_nperms <- 10000
-
-read_msigdb_json_file <- function(filename) {
-  x <- jsonlite::fromJSON(filename)
-  y <- tibble(gs_name = names(x), gs = x) %>% 
-    unnest_wider(gs) %>%
-    unnest_longer(geneSymbols) %>%
-    select(gs_cat = collection,
-           gs_name = gs_name,
-           gene_symbol = geneSymbols)
-}
-
-# read msigdb data: hallmark
-f <- system.file("extdata", "h.all.v2024.1.Hs.json", package = "stgeomx")
-msigdb_gene_sets <- read_msigdb_json_file(f)
-# determine gene universe
-msigdb_genes <- intersect(fds_qq_qn$meta$gene, msigdb_gene_sets$gene_symbol)
-# filter genes not in our dataset
-msigdb_gene_sets <- msigdb_gene_sets %>%
-  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
-  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
-# gene set categories
-gs_hallmark <- dplyr::filter(msigdb_gene_sets, gs_cat == "H")
-gs_hallmark <- split(x = gs_hallmark$gene_symbol, f = gs_hallmark$gs_name)
-
-# read msigdb data: pancreas_endocrine
-f <- system.file("extdata", "GOBP_ENDOCRINE_PANCREAS_DEVELOPMENT.v2024.1.Hs.json", package = "stgeomx")
-gobp_end_pancreas_gene_sets <- read_msigdb_json_file(f)
-# determine gene universe
-gobp_end_pancreas_genes <- intersect(fds_qq_qn$meta$gene, gobp_end_pancreas_gene_sets$gene_symbol)
-# filter genes not in our dataset
-gobp_end_pancreas_gene_sets <- gobp_end_pancreas_gene_sets %>%
-  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
-  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
-# gene set categories
-gs_end_panc <- dplyr::filter(gobp_end_pancreas_gene_sets, gs_cat == "C5:GO:BP")
-gs_end_panc <- split(x = gs_end_panc$gene_symbol, f = gs_end_panc$gs_name)
-
-# read msigdb data: pancreas secretion
-f <- system.file("extdata", "GOBP_INSULIN_SECRETION.v2024.1.Hs.json", package = "stgeomx")
-gobp_pancreas_secretion_gene_sets <- read_msigdb_json_file(f)
-# determine gene universe
-gobp_pancreas_secretion_genes <- intersect(fds_qq_qn$meta$gene, gobp_pancreas_secretion_gene_sets$gene_symbol)
-# filter genes not in our dataset
-gobp_pancreas_secretion_gene_sets <- gobp_pancreas_secretion_gene_sets %>%
-  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
-  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
-# gene set categories
-gs_panc_sec <- dplyr::filter(gobp_pancreas_secretion_gene_sets, gs_cat == "C5:GO:BP")
-gs_panc_sec <- split(x = gs_panc_sec$gene_symbol, f = gs_panc_sec$gs_name)
-
-# read msigdb data: brain development gene sets
-f <- system.file("extdata", "brain_genesets.v2024.1.Hs.json", package = "stgeomx")
-gobp_brain_gene_sets <- read_msigdb_json_file(f)
-# determine gene universe
-gobp_brain_genes <- intersect(fds_qq_qn$meta$gene, gobp_brain_gene_sets$gene_symbol)
-# filter genes not in our dataset
-gobp_brain_gene_sets <- gobp_brain_gene_sets %>%
-  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
-  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
-# gene set categories
-gs_brain <- dplyr::filter(gobp_brain_gene_sets, gs_cat == "C5:GO:BP")
-gs_brain <- split(x = gs_brain$gene_symbol, f = gs_brain$gs_name)
-
-# read msigdb data: ln development gene sets
-f <- system.file("extdata", "ln_genesets.v2024.1.Hs.json", package = "stgeomx")
-gobp_ln_gene_sets <- read_msigdb_json_file(f)
-# determine gene universe
-gobp_ln_genes <- intersect(fds_qq_qn$meta$gene, gobp_ln_gene_sets$gene_symbol)
-# filter genes not in our dataset
-gobp_ln_gene_sets <- gobp_ln_gene_sets %>%
-  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
-  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
-# gene set categories
-gs_ln <- dplyr::filter(gobp_ln_gene_sets, gs_cat == "C5:GO:BP")
-gs_ln <- split(x = gs_ln$gene_symbol, f = gs_ln$gs_name)
-
-# read msigdb data: kidney development gene sets
-f <- system.file("extdata", "kidney_genesets.v2024.1.Hs.json", package = "stgeomx")
-gobp_kidney_gene_sets <- read_msigdb_json_file(f)
-# determine gene universe
-gobp_kidney_genes <- intersect(fds_qq_qn$meta$gene, gobp_kidney_gene_sets$gene_symbol)
-# filter genes not in our dataset
-gobp_kidney_gene_sets <- gobp_kidney_gene_sets %>%
-  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
-  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
-# gene set categories
-gs_kidney <- dplyr::filter(gobp_kidney_gene_sets, gs_cat == "C5:GO:BP")
-gs_kidney <- split(x = gs_kidney$gene_symbol, f = gs_kidney$gs_name)
-
-# read msigdb data: colon development gene sets
-f <- system.file("extdata", "colon_genesets.v2024.1.Hs.json", package = "stgeomx")
-gobp_colon_gene_sets <- read_msigdb_json_file(f)
-# determine gene universe
-gobp_colon_genes <- intersect(fds_qq_qn$meta$gene, gobp_colon_gene_sets$gene_symbol)
-# filter genes not in our dataset
-gobp_colon_gene_sets <- gobp_colon_gene_sets %>%
-  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
-  distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
-# gene set categories
-gs_colon <- dplyr::filter(gobp_colon_gene_sets, gs_cat == "C5:GO:BP")
-gs_colon <- split(x = gs_colon$gene_symbol, f = gs_colon$gs_name)
-
-# new gsea code
-get_fgsea_ranks_de <- function(xde, mycontrast) {
-  ranks <- xde %>%
-    dplyr::filter(contrast == mycontrast) %>%
-    select(gene, log2fc, padj) %>%
-    mutate(rank = log2fc)
-  ranks = sort(setNames(ranks$rank, ranks$gene), decreasing = TRUE)
-  return(ranks)
-}
- 
- 
-fgsea_run_batch <- function(xde, xgs,
-                            fgsea_eps=0,
-                            fgsea_nperms=1000) {
-  gsea <- NULL
-  for (xcontrast in unique(xde$contrast)) {
-    ranks <- get_fgsea_ranks_de(xde, xcontrast)
-    res <- fgsea(pathways=xgs,
-                 stats=ranks,
-                 eps=fgsea_eps,
-                 nPermSimple=fgsea_nperms)
-    res <- mutate(res, contrast = xcontrast)
-    gsea <- bind_rows(gsea, res)     
-  }
-  return(gsea)
-}
-
-stgeomx_gsea_pipeline <- function(gsea, de, method) {
-  res <- fgsea_run_batch(de, gs_hallmark,
-                       fgsea_eps=0, fgsea_nperms=gsea_nperms)
-  res <- res %>% mutate(method = method)
-  gsea <- bind_rows(gsea, res)
-  
-  res <- fgsea_run_batch(de, gs_ex_panc,
-                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
-  res <- res %>% mutate(method = method)
-  gsea <- bind_rows(gsea, res)
-  
-  
-  res <- fgsea_run_batch(de, gs_end_panc,
-                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
-  res <- res %>% mutate(method = method)
-  gsea <- bind_rows(gsea, res)
-  
-  res <- fgsea_run_batch(de, gs_panc_sec,
-                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
-  res <- res %>% mutate(method = method)
-  gsea <- bind_rows(gsea, res)
-  
-  res <- fgsea_run_batch(de, gs_brain,
-                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
-  res <- res %>% mutate(method = method)
-  gsea <- bind_rows(gsea, res)
-  
-  res <- fgsea_run_batch(de, gs_ln,
-                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
-  res <- res %>% mutate(method = method)
-  gsea <- bind_rows(gsea, res)
-  
-  res <- fgsea_run_batch(de, gs_kidney,
-                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
-  res <- res %>% mutate(method = method)
-  gsea <- bind_rows(gsea, res)
-  
-  res <- fgsea_run_batch(de, gs_colon,
-                         fgsea_eps=0, fgsea_nperms=gsea_nperms)
-  res <- res %>% mutate(method = method)
-  gsea <- bind_rows(gsea, res)
-  
-  # filter out irrelevant genes in hallmark
-  gsea <- gsea %>%
-  filter(!(pathway %in% c("HALLMARK_ESTROGEN_RESPONSE_LATE", "HALLMARK_ESTROGEN_RESPONSE_EARLY", "HALLMARK_GLYCOLYSIS", "HALLMARK_P53_PATHWAY", "HALLMARK_HEME_METABOLISM", "HALLMARK_ADIPOGENESIS", "HALLMARK_MYC_TARGETS_V2", "HALLMARK_MYC_TARGETS_V1", "HALLMARK_OXIDATIVE_PHOSPHORYLATION", "HALLMARK_HYPOXIA", "HALLMARK_UV_RESPONSE_DN", "HALLMARK_MYOGENESIS", "HALLMARK_APICAL_SURFACE", "HALLMARK_APOPTOSIS", "HALLMARK_IL6_JAK_STAT3_SIGNALING", "HALLMARK_IL2_STAT5_SIGNALING", "HALLMARK_MITOTIC_SPINDLE", "HALLMARK_APICAL_JUNCTION", "HALLMARK_KRAS_SIGNALING_UP", "HALLMARK_KRAS_SIGNALING_DN", "HALLMARK_UNFOLDED_PROTEIN_RESPONSE", "HALLMARK_DNA_REPAIR", "HALLMARK_FATTY_ACID_METABOLISM", "HALLMARK_HEDGEHOG_SIGNALING", "HALLMARK_ANGIOGENESIS", "HALLMARK_E2F_TARGETS", "HALLMARK_G2M_CHECKPOINT", "HALLMARK_TNFA_SIGNALING_VIA_NFKB", "HALLMARK_PROTEIN_SECRETION", "HALLMARK_CHOLESTEROL_HOMEOSTASIS")))
-  
-  return(gsea)
-}
-
-# Run full analysis
-gsea_all <- NULL
-gsea_none_q3 <- NULL
-gsea_none_tmm <- NULL
-gsea_none_rle <- NULL
-gsea_none_qn <- NULL
-
-gsea_bgsub_q3 <- NULL
-gsea_bgsub_tmm <- NULL
-gsea_bgsub_rle <- NULL
-gsea_bgsub_qn <- NULL
-
-gsea_qq_q3 <- NULL
-gsea_qq_tmm <- NULL
-gsea_qq_rle <- NULL
-gsea_qq_qn <- NULL
-
-# run stgeomx pipeline
-gsea_none_q3 <- stgeomx_gsea_pipeline(gsea_none_q3, de_none_q3, "none_q3")
-gsea_none_tmm <- stgeomx_gsea_pipeline(gsea_none_tmm, de_none_tmm, "none_tmm")
-gsea_none_rle <- stgeomx_gsea_pipeline(gsea_none_rle, de_none_rle, "none_rle")
-gsea_none_qn <- stgeomx_gsea_pipeline(gsea_none_qn, de_none_qn, "none_qn")
-
-gsea_bgsub_q3 <- stgeomx_gsea_pipeline(gsea_bgsub_q3, de_bgsub_q3, "bgsub_q3")
-gsea_bgsub_tmm <- stgeomx_gsea_pipeline(gsea_bgsub_tmm, de_bgsub_tmm, "bgsub_tmm")
-gsea_bgsub_rle <- stgeomx_gsea_pipeline(gsea_bgsub_rle, de_bgsub_rle, "bgsub_rle")
-gsea_bgsub_qn <- stgeomx_gsea_pipeline(gsea_bgsub_qn, de_bgsub_qn, "bgsub_qn")
-
-gsea_qq_q3 <- stgeomx_gsea_pipeline(gsea_qq_q3, de_qq_q3, "qq_q3")
-gsea_qq_tmm <- stgeomx_gsea_pipeline(gsea_qq_tmm, de_qq_tmm, "qq_tmm")
-gsea_qq_rle <- stgeomx_gsea_pipeline(gsea_qq_rle, de_qq_rle, "qq_rle")
-gsea_qq_qn <- stgeomx_gsea_pipeline(gsea_qq_qn, de_qq_qn, "qq_qn")
+# BiocManager::install("fgsea")
+# 
+# gsea_nperms <- 10000
+# 
+# read_msigdb_json_file <- function(filename) {
+#   x <- jsonlite::fromJSON(filename)
+#   y <- tibble(gs_name = names(x), gs = x) %>% 
+#     unnest_wider(gs) %>%
+#     unnest_longer(geneSymbols) %>%
+#     select(gs_cat = collection,
+#            gs_name = gs_name,
+#            gene_symbol = geneSymbols)
+# }
+# 
+# # read msigdb data: hallmark
+# f <- system.file("extdata", "h.all.v2024.1.Hs.json", package = "stgeomx")
+# msigdb_gene_sets <- read_msigdb_json_file(f)
+# # determine gene universe
+# msigdb_genes <- intersect(fds_qq_qn$meta$gene, msigdb_gene_sets$gene_symbol)
+# # filter genes not in our dataset
+# msigdb_gene_sets <- msigdb_gene_sets %>%
+#   dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+#   distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# # gene set categories
+# gs_hallmark <- dplyr::filter(msigdb_gene_sets, gs_cat == "H")
+# gs_hallmark <- split(x = gs_hallmark$gene_symbol, f = gs_hallmark$gs_name)
+# 
+# # read msigdb data: pancreas_endocrine
+# f <- system.file("extdata", "GOBP_ENDOCRINE_PANCREAS_DEVELOPMENT.v2024.1.Hs.json", package = "stgeomx")
+# gobp_end_pancreas_gene_sets <- read_msigdb_json_file(f)
+# # determine gene universe
+# gobp_end_pancreas_genes <- intersect(fds_qq_qn$meta$gene, gobp_end_pancreas_gene_sets$gene_symbol)
+# # filter genes not in our dataset
+# gobp_end_pancreas_gene_sets <- gobp_end_pancreas_gene_sets %>%
+#   dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+#   distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# # gene set categories
+# gs_end_panc <- dplyr::filter(gobp_end_pancreas_gene_sets, gs_cat == "C5:GO:BP")
+# gs_end_panc <- split(x = gs_end_panc$gene_symbol, f = gs_end_panc$gs_name)
+# 
+# # read msigdb data: pancreas secretion
+# f <- system.file("extdata", "GOBP_INSULIN_SECRETION.v2024.1.Hs.json", package = "stgeomx")
+# gobp_pancreas_secretion_gene_sets <- read_msigdb_json_file(f)
+# # determine gene universe
+# gobp_pancreas_secretion_genes <- intersect(fds_qq_qn$meta$gene, gobp_pancreas_secretion_gene_sets$gene_symbol)
+# # filter genes not in our dataset
+# gobp_pancreas_secretion_gene_sets <- gobp_pancreas_secretion_gene_sets %>%
+#   dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+#   distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# # gene set categories
+# gs_panc_sec <- dplyr::filter(gobp_pancreas_secretion_gene_sets, gs_cat == "C5:GO:BP")
+# gs_panc_sec <- split(x = gs_panc_sec$gene_symbol, f = gs_panc_sec$gs_name)
+# 
+# # read msigdb data: brain development gene sets
+# f <- system.file("extdata", "brain_genesets.v2024.1.Hs.json", package = "stgeomx")
+# gobp_brain_gene_sets <- read_msigdb_json_file(f)
+# # determine gene universe
+# gobp_brain_genes <- intersect(fds_qq_qn$meta$gene, gobp_brain_gene_sets$gene_symbol)
+# # filter genes not in our dataset
+# gobp_brain_gene_sets <- gobp_brain_gene_sets %>%
+#   dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+#   distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# # gene set categories
+# gs_brain <- dplyr::filter(gobp_brain_gene_sets, gs_cat == "C5:GO:BP")
+# gs_brain <- split(x = gs_brain$gene_symbol, f = gs_brain$gs_name)
+# 
+# # read msigdb data: ln development gene sets
+# f <- system.file("extdata", "ln_genesets.v2024.1.Hs.json", package = "stgeomx")
+# gobp_ln_gene_sets <- read_msigdb_json_file(f)
+# # determine gene universe
+# gobp_ln_genes <- intersect(fds_qq_qn$meta$gene, gobp_ln_gene_sets$gene_symbol)
+# # filter genes not in our dataset
+# gobp_ln_gene_sets <- gobp_ln_gene_sets %>%
+#   dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+#   distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# # gene set categories
+# gs_ln <- dplyr::filter(gobp_ln_gene_sets, gs_cat == "C5:GO:BP")
+# gs_ln <- split(x = gs_ln$gene_symbol, f = gs_ln$gs_name)
+# 
+# # read msigdb data: kidney development gene sets
+# f <- system.file("extdata", "kidney_genesets.v2024.1.Hs.json", package = "stgeomx")
+# gobp_kidney_gene_sets <- read_msigdb_json_file(f)
+# # determine gene universe
+# gobp_kidney_genes <- intersect(fds_qq_qn$meta$gene, gobp_kidney_gene_sets$gene_symbol)
+# # filter genes not in our dataset
+# gobp_kidney_gene_sets <- gobp_kidney_gene_sets %>%
+#   dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+#   distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# # gene set categories
+# gs_kidney <- dplyr::filter(gobp_kidney_gene_sets, gs_cat == "C5:GO:BP")
+# gs_kidney <- split(x = gs_kidney$gene_symbol, f = gs_kidney$gs_name)
+# 
+# # read msigdb data: colon development gene sets
+# f <- system.file("extdata", "colon_genesets.v2024.1.Hs.json", package = "stgeomx")
+# gobp_colon_gene_sets <- read_msigdb_json_file(f)
+# # determine gene universe
+# gobp_colon_genes <- intersect(fds_qq_qn$meta$gene, gobp_colon_gene_sets$gene_symbol)
+# # filter genes not in our dataset
+# gobp_colon_gene_sets <- gobp_colon_gene_sets %>%
+#   dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
+#   distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
+# # gene set categories
+# gs_colon <- dplyr::filter(gobp_colon_gene_sets, gs_cat == "C5:GO:BP")
+# gs_colon <- split(x = gs_colon$gene_symbol, f = gs_colon$gs_name)
+# 
+# # new gsea code
+# get_fgsea_ranks_de <- function(xde, mycontrast) {
+#   ranks <- xde %>%
+#     dplyr::filter(contrast == mycontrast) %>%
+#     select(gene, log2fc, padj) %>%
+#     mutate(rank = log2fc)
+#   ranks = sort(setNames(ranks$rank, ranks$gene), decreasing = TRUE)
+#   return(ranks)
+# }
+#  
+#  
+# fgsea_run_batch <- function(xde, xgs,
+#                             fgsea_eps=0,
+#                             fgsea_nperms=1000) {
+#   gsea <- NULL
+#   for (xcontrast in unique(xde$contrast)) {
+#     ranks <- get_fgsea_ranks_de(xde, xcontrast)
+#     res <- fgsea(pathways=xgs,
+#                  stats=ranks,
+#                  eps=fgsea_eps,
+#                  nPermSimple=fgsea_nperms)
+#     res <- mutate(res, contrast = xcontrast)
+#     gsea <- bind_rows(gsea, res)     
+#   }
+#   return(gsea)
+# }
+# 
+# stgeomx_gsea_pipeline <- function(gsea, de, method) {
+#   res <- fgsea_run_batch(de, gs_hallmark,
+#                        fgsea_eps=0, fgsea_nperms=gsea_nperms)
+#   res <- res %>% mutate(method = method)
+#   gsea <- bind_rows(gsea, res)
+#   
+#   res <- fgsea_run_batch(de, gs_ex_panc,
+#                          fgsea_eps=0, fgsea_nperms=gsea_nperms)
+#   res <- res %>% mutate(method = method)
+#   gsea <- bind_rows(gsea, res)
+#   
+#   
+#   res <- fgsea_run_batch(de, gs_end_panc,
+#                          fgsea_eps=0, fgsea_nperms=gsea_nperms)
+#   res <- res %>% mutate(method = method)
+#   gsea <- bind_rows(gsea, res)
+#   
+#   res <- fgsea_run_batch(de, gs_panc_sec,
+#                          fgsea_eps=0, fgsea_nperms=gsea_nperms)
+#   res <- res %>% mutate(method = method)
+#   gsea <- bind_rows(gsea, res)
+#   
+#   res <- fgsea_run_batch(de, gs_brain,
+#                          fgsea_eps=0, fgsea_nperms=gsea_nperms)
+#   res <- res %>% mutate(method = method)
+#   gsea <- bind_rows(gsea, res)
+#   
+#   res <- fgsea_run_batch(de, gs_ln,
+#                          fgsea_eps=0, fgsea_nperms=gsea_nperms)
+#   res <- res %>% mutate(method = method)
+#   gsea <- bind_rows(gsea, res)
+#   
+#   res <- fgsea_run_batch(de, gs_kidney,
+#                          fgsea_eps=0, fgsea_nperms=gsea_nperms)
+#   res <- res %>% mutate(method = method)
+#   gsea <- bind_rows(gsea, res)
+#   
+#   res <- fgsea_run_batch(de, gs_colon,
+#                          fgsea_eps=0, fgsea_nperms=gsea_nperms)
+#   res <- res %>% mutate(method = method)
+#   gsea <- bind_rows(gsea, res)
+#   
+#   # filter out irrelevant genes in hallmark
+#   gsea <- gsea %>%
+#   filter(!(pathway %in% c("HALLMARK_ESTROGEN_RESPONSE_LATE", "HALLMARK_ESTROGEN_RESPONSE_EARLY", "HALLMARK_GLYCOLYSIS", "HALLMARK_P53_PATHWAY", "HALLMARK_HEME_METABOLISM", "HALLMARK_ADIPOGENESIS", "HALLMARK_MYC_TARGETS_V2", "HALLMARK_MYC_TARGETS_V1", "HALLMARK_OXIDATIVE_PHOSPHORYLATION", "HALLMARK_HYPOXIA", "HALLMARK_UV_RESPONSE_DN", "HALLMARK_MYOGENESIS", "HALLMARK_APICAL_SURFACE", "HALLMARK_APOPTOSIS", "HALLMARK_IL6_JAK_STAT3_SIGNALING", "HALLMARK_IL2_STAT5_SIGNALING", "HALLMARK_MITOTIC_SPINDLE", "HALLMARK_APICAL_JUNCTION", "HALLMARK_KRAS_SIGNALING_UP", "HALLMARK_KRAS_SIGNALING_DN", "HALLMARK_UNFOLDED_PROTEIN_RESPONSE", "HALLMARK_DNA_REPAIR", "HALLMARK_FATTY_ACID_METABOLISM", "HALLMARK_HEDGEHOG_SIGNALING", "HALLMARK_ANGIOGENESIS", "HALLMARK_E2F_TARGETS", "HALLMARK_G2M_CHECKPOINT", "HALLMARK_TNFA_SIGNALING_VIA_NFKB", "HALLMARK_PROTEIN_SECRETION", "HALLMARK_CHOLESTEROL_HOMEOSTASIS")))
+#   
+#   return(gsea)
+# }
+# 
+# # Run full analysis
+# gsea_all <- NULL
+# gsea_none_q3 <- NULL
+# gsea_none_tmm <- NULL
+# gsea_none_rle <- NULL
+# gsea_none_qn <- NULL
+# 
+# gsea_bgsub_q3 <- NULL
+# gsea_bgsub_tmm <- NULL
+# gsea_bgsub_rle <- NULL
+# gsea_bgsub_qn <- NULL
+# 
+# gsea_qq_q3 <- NULL
+# gsea_qq_tmm <- NULL
+# gsea_qq_rle <- NULL
+# gsea_qq_qn <- NULL
+# 
+# # run stgeomx pipeline
+# gsea_none_q3 <- stgeomx_gsea_pipeline(gsea_none_q3, de_none_q3, "none_q3")
+# gsea_none_tmm <- stgeomx_gsea_pipeline(gsea_none_tmm, de_none_tmm, "none_tmm")
+# gsea_none_rle <- stgeomx_gsea_pipeline(gsea_none_rle, de_none_rle, "none_rle")
+# gsea_none_qn <- stgeomx_gsea_pipeline(gsea_none_qn, de_none_qn, "none_qn")
+# 
+# gsea_bgsub_q3 <- stgeomx_gsea_pipeline(gsea_bgsub_q3, de_bgsub_q3, "bgsub_q3")
+# gsea_bgsub_tmm <- stgeomx_gsea_pipeline(gsea_bgsub_tmm, de_bgsub_tmm, "bgsub_tmm")
+# gsea_bgsub_rle <- stgeomx_gsea_pipeline(gsea_bgsub_rle, de_bgsub_rle, "bgsub_rle")
+# gsea_bgsub_qn <- stgeomx_gsea_pipeline(gsea_bgsub_qn, de_bgsub_qn, "bgsub_qn")
+# 
+# gsea_qq_q3 <- stgeomx_gsea_pipeline(gsea_qq_q3, de_qq_q3, "qq_q3")
+# gsea_qq_tmm <- stgeomx_gsea_pipeline(gsea_qq_tmm, de_qq_tmm, "qq_tmm")
+# gsea_qq_rle <- stgeomx_gsea_pipeline(gsea_qq_rle, de_qq_rle, "qq_rle")
+# gsea_qq_qn <- stgeomx_gsea_pipeline(gsea_qq_qn, de_qq_qn, "qq_qn")
 
 # # write results for clusters
 # contrasts <- c("clusterPanc", "clusterBrain", "clusterLn", "clusterKidney", "clusterColon")
@@ -2276,6 +2285,10 @@ gsea_qq_qn <- stgeomx_gsea_pipeline(gsea_qq_qn, de_qq_qn, "qq_qn")
 
 ### GSEA: all msigdb
 ```{r all_msigdb}
+BiocManager::install("fgsea")
+library(fgsea)
+library(dplyr)
+
 gsea_nperms <- 10000
 
 read_msigdb_json_file <- function(filename) {
@@ -2283,7 +2296,7 @@ read_msigdb_json_file <- function(filename) {
   y <- tibble(gs_name = names(x), gs = x) %>% 
     unnest_wider(gs) %>%
     unnest_longer(geneSymbols) %>%
-    select(gs_cat = collection,
+    dplyr::select(gs_cat = collection,
            gs_name = gs_name,
            gene_symbol = geneSymbols)
 }
@@ -2294,11 +2307,11 @@ f <- system.file("extdata", "msigdb.v2024.1.Hs.json", package = "stgeomx")
 msigdb_gene_sets <- read_msigdb_json_file(f)
 
 # determine gene universe
-msigdb_genes <- intersect(gene_universe, msigdb_gene_sets$gene_symbol)
+msigdb_genes <- intersect(fds_qq_qn$meta$gene, msigdb_gene_sets$gene_symbol)
 
 # filter genes not in our dataset
 msigdb_gene_sets <- msigdb_gene_sets %>%
-  dplyr::filter(gene_symbol %in% gene_universe) %>%
+  dplyr::filter(gene_symbol %in% fds_qq_qn$meta$gene) %>%
   distinct(gs_cat, gs_name, gene_symbol, .keep_all = TRUE)
 
 # gene set categories
@@ -2320,7 +2333,7 @@ gs_tft <- split(x = gs_tft$gene_symbol, f = gs_tft$gs_name)
 get_fgsea_ranks_de <- function(xde, mycontrast) {
   ranks <- xde %>%
     dplyr::filter(contrast == mycontrast) %>%
-    select(gene, log2fc, padj) %>%
+    dplyr::select(gene, log2fc, padj) %>%
     mutate(rank = log2fc)
   ranks = sort(setNames(ranks$rank, ranks$gene), decreasing = TRUE)
   return(ranks)
