@@ -1,3 +1,0 @@
-{
-  "GOBP_BRAIN_MORPHOGENESIS" : {"systematicName":"M16971","pmid":"","exactSource":"GO:0048854","geneSymbols":["AKT3","BBS1","BBS2","BBS4","CDH2","CTNNA2","EMX1","FANCC","FANCD2","FBXW11","FGF8","FOXO3","FZD3","FZD6","GBA1","GDF7","GSX2","HESX1","MKKS","NF1","OTX1","PAFAH1B1","PAX2","PROP1","PSEN1","PTEN","SHANK3","SLC4A10","SLC6A4","SLIT1","SMO","SOS1","SPEF2","TUBA1A","UCHL5","VPS51","WNT5A","ZNF335"],"msigdbURL":"https://www.gsea-msigdb.org/gsea/msigdb/human/geneset/GOBP_BRAIN_MORPHOGENESIS","externalDetailsURL":["http://amigo.geneontology.org/amigo/term/GO:0048854"],"filteredBySimilarity":[],"externalNamesForSimilarTerms":[],"collection":"C5:GO:BP"}
-}
